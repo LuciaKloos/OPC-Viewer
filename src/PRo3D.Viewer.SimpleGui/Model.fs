@@ -5,6 +5,13 @@ open Aardvark.Rendering
 open Aardvark.UI.Primitives
 open Adaptify
 
+type PointOfInterestCamera = {
+    Name     : string
+    Position : V3d
+    Forward  : V3d
+    Up       : V3d
+}
+
 /// State after a folder was successfully loaded:
 /// the root-node bounding box and the absolute paths of every
 /// patchhierarchy.xml directory (i.e. the OPCs to render).
@@ -19,6 +26,7 @@ type LoadedScene = {
     /// real albedo (everything before tends to be data layers — normals,
     /// gravity, lon/lat/rad, …).
     TextureCount    : int
+    PointsOfInterest  : list<PointOfInterestCamera>
 }
 
 [<ModelType>]

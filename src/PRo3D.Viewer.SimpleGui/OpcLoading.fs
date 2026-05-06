@@ -9,12 +9,72 @@ open Aardvark.Data.Opc
 open Aardvark.GeoSpatial.Opc
 open Aardvark.GeoSpatial.Opc.Configurations
 open Aardvark.GeoSpatial.Opc.Load
+open System.Text.Json
 
 open FSharp.Data.Adaptive
 open MBrace.FsPickler
 
 
 module OpcLoading =
+
+    [<CLIMutable>]
+    type private PoiDto = {
+        Name     : string
+        Position : float[]
+        Forward  : float[]
+        Up       : float[]
+    }
+
+    [<CLIMutable>]
+    type private PoiFileDto = {
+        PointsOfInterest : PoiDto[]
+    }
+
+    let private tryV3d (values : float[]) =
+        if isNull values || values.Length <> 3 then
+            None
+        else
+            Some (V3d(values.[0], values.[1], values.[2]))
+
+    let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =
+        let path = Path.Combine(rootDir, "points-of-interest.json")
+
+        if not (File.Exists path) then
+            []
+        else
+            try
+                let json = File.ReadAllText path
+
+                let options = JsonSerializerOptions()
+                options.PropertyNameCaseInsensitive <- true
+
+                let file = JsonSerializer.Deserialize<PoiFileDto>(json, options)
+
+                if isNull file || isNull file.PointsOfInterest then
+                    []
+                else
+                    file.PointsOfInterest
+                    |> Array.choose (fun p ->
+                        match tryV3d p.Position, tryV3d p.Forward, tryV3d p.Up with
+                        | Some pos, Some forward, Some up ->
+                            Some ({
+                                Name =
+                                    if System.String.IsNullOrWhiteSpace p.Name then
+                                        "point of interest"
+                                    else
+                                        p.Name
+                                Position = pos
+                                Forward = forward
+                                Up = up
+                            } : PointOfInterestCamera)
+                        | _ ->
+                            Log.warn "[POI] Ignoring invalid point of interest in %s" path
+                            None
+                    )
+                    |> Array.toList
+            with ex ->
+                Log.warn "[POI] Could not read %s: %s" path ex.Message
+                []
 
     let private serializer = FsPickler.CreateBinarySerializer()
 
@@ -118,3 +178,4 @@ module OpcLoading =
                           channel = ChannelReference.ChannelWithIndex 0 })
                 { AttributeParameters.defaultParams with selectedTexture = selected })
         Sg.AttributeParameters attribs sg
+

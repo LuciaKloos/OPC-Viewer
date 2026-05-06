@@ -58,6 +58,7 @@ type Action =
     | NextPrimaryTexture
     | PrevPrimaryTexture
     | SetPrimaryTextureLast
+    | MoveCameraToPointOfInterest
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -69,6 +70,36 @@ let cameraForBox (bb : Box3d) : CameraView =
         CameraView.lookAt bb.Max bb.Center sky
     else
         CameraView.lookAt (V3d(3.0, 3.0, 3.0)) V3d.Zero V3d.OOI
+
+// this can be used to find a location for creating a poiint of interest file
+let private logCamera (cameraState : CameraControllerState) =
+    let view = cameraState.view
+    let p = view.Location
+    let f = view.Forward
+    let u = view.Up
+
+    Log.line
+        "[camera] pos=(%.6f, %.6f, %.6f), forward=(%.6f, %.6f, %.6f), up=(%.6f, %.6f, %.6f)"
+        p.X p.Y p.Z
+        f.X f.Y f.Z
+        u.X u.Y u.Z
+
+let cameraForPointOfInterest (poi : PointOfInterestCamera) : CameraView =
+    let forward =
+        if Vec.length poi.Forward > 1e-8 then
+            poi.Forward.Normalized
+        else
+            V3d.OOI
+
+    let up =
+        if Vec.length poi.Up > 1e-8 then
+            poi.Up.Normalized
+        else
+            V3d.OOI
+
+    let target = poi.Position + forward
+
+    CameraView.lookAt poi.Position target up
 
 let nearFarForBox (bb : Box3d) : float * float =
     if bb.IsValid && not bb.IsEmpty && bb.Size.NormMax > 0.0 then
@@ -116,6 +147,7 @@ let tryLoadFolder (path : string) : LoadOutcome =
         else
             let hierarchies, bb = OpcLoading.loadHierarchies basePaths
             let sky = if Vec.length bb.Center > 0.0 then bb.Center.Normalized else V3d.OOI
+            let pointsOfInterest = OpcLoading.loadPointsOfInterest path
             // any hierarchy will do — they should all share the same texture
             // layer layout. Fall back to 1 if something is off.
             let textureCount =
@@ -125,12 +157,13 @@ let tryLoadFolder (path : string) : LoadOutcome =
                     OpcLoading.logTextureLayers h
                     OpcLoading.textureLayerCount h)
                 |> Option.defaultValue 1
-            Loaded {
+            Loaded { 
                 RootDirectory = path
                 HierarchyPaths = basePaths
                 BoundingBox = bb
                 Sky = sky
                 TextureCount = textureCount
+                PointsOfInterest = pointsOfInterest
             }
     with ex ->
         Failed (sprintf "load failed: %s" ex.Message)
@@ -181,6 +214,22 @@ let update (m : Model) (a : Action) =
         match m.loaded with
         | Some s -> { m with primaryTextureIndex = max 0 (s.TextureCount - 1) }
         | None -> m
+    | MoveCameraToPointOfInterest ->
+        match m.loaded with
+        | Some scene -> 
+           match scene.PointsOfInterest |> List.tryHead with
+           | Some poi -> 
+                { m with 
+                    cameraState = 
+                        { m.cameraState with 
+                            view = cameraForPointOfInterest poi 
+                        } 
+                    statusMessage = sprintf "Moved camera to point of interest: %s" poi.Name
+                 }
+           | None ->
+                { m with statusMessage = "No point-of-interest file found." }
+        | None ->
+            { m with statusMessage = "Load an OPC folder before moving to a point of interest." }
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -278,6 +327,9 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ]
             div [ style "margin-top: 4px" ] [
                 button [ clazz "ui mini button"; onClick (fun _ -> RecenterCamera) ] [ text "recenter" ]
+            ]
+            div [ style "margin-top: 4px" ] [
+                button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
             ]
         ]
 
