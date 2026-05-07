@@ -17,32 +17,37 @@ open MBrace.FsPickler
 
 module OpcLoading =
 
-    [<CLIMutable>]
-    type private PoiDto = {
-        Name     : string
-        Position : float[]
-        Forward  : float[]
-        Up       : float[]
-    }
+    type PoiDto() =
+        member val Name : string = null with get, set
+        member val Position : float[] = null with get, set
+        member val Forward : float[] = null with get, set
+        member val Up : float[] = null with get, set
 
-    [<CLIMutable>]
-    type private PoiFileDto = {
-        PointsOfInterest : PoiDto[]
-    }
-
+    type PoiFileDto() =
+        member val PointsOfInterest : PoiDto[] = null with get, set
+        
     let private tryV3d (values : float[]) =
         if isNull values || values.Length <> 3 then
             None
         else
             Some (V3d(values.[0], values.[1], values.[2]))
 
-    let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =
-        let path = Path.Combine(rootDir, "points-of-interest.json")
+    let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =    
+        Log.line "[POI] Looking for file in %s" rootDir
+        let path =
+            Path.Combine(
+                rootDir,
+                "g_01960mm_spc_dtm_dimo_0000n00000_v003_0_0",
+                "points-of-interest.json"
+            )
 
         if not (File.Exists path) then
+            Log.line "[POI] File does not exist: %s" path
             []
         else
             try
+                Log.line "[POI] File found: %s" path
+
                 let json = File.ReadAllText path
 
                 let options = JsonSerializerOptions()
@@ -50,9 +55,15 @@ module OpcLoading =
 
                 let file = JsonSerializer.Deserialize<PoiFileDto>(json, options)
 
-                if isNull file || isNull file.PointsOfInterest then
+                if isNull file then
+                    Log.warn "[POI] JSON root could not be deserialized."
+                    []
+                elif isNull file.PointsOfInterest then
+                    Log.warn "[POI] JSON does not contain a PointsOfInterest array."
                     []
                 else
+                    Log.line "[POI] Found %d raw points of interest." file.PointsOfInterest.Length
+
                     file.PointsOfInterest
                     |> Array.choose (fun p ->
                         match tryV3d p.Position, tryV3d p.Forward, tryV3d p.Up with
