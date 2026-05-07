@@ -14,6 +14,11 @@ module private SceneShaders =
 
     type UniformScope with
         member x.UseSecondary : bool = uniform?UseSecondary
+        member x.SecondaryOpacity : float32 = uniform?SecondaryOpacity
+        member x.MousePos : V2f = uniform?MousePos
+        member x.ViewportSize : V2f = uniform?ViewportSize
+        member x.LensRadius : float32 = uniform?LensRadius
+        member x.SecondaryTextureIndex : int = uniform?SecondaryTextureIndex
 
     let private secondarySampler =
         sampler2d {
@@ -38,15 +43,50 @@ module private SceneShaders =
             }
         }
 
-    /// Replaces the diffuse colour with the secondary texture sample
-    /// when the `UseSecondary` uniform is true.
-    let maybeSecondary (v : Vertex) =
+    let secondaryLens (v : Vertex) =
         fragment {
-            if uniform.UseSecondary then
-                return secondarySampler.Sample(v.tc)
+            let baseColor = v.c
+            let secondaryColor = secondarySampler.Sample(v.tc)
+
+            let fragPx =
+                v.pos.XY
+
+            let mousePx =
+                V2f(
+                    uniform.MousePos.X,
+                    uniform.ViewportSize.Y - uniform.MousePos.Y
+                )
+
+            let dx = mousePx.X - fragPx.X
+            let dy = mousePx.Y - fragPx.Y
+
+            let minViewportSize =
+                if uniform.ViewportSize.X < uniform.ViewportSize.Y then
+                    uniform.ViewportSize.X
+                else
+                    uniform.ViewportSize.Y
+
+            let radiusPx =
+                uniform.LensRadius * minViewportSize
+
+            let insideLens =
+                dx * dx + dy * dy < radiusPx * radiusPx
+
+            let secondaryMix =
+                if uniform.UseSecondary || insideLens then
+                    uniform.SecondaryOpacity
+                else
+                    0.0f
+
+            let rgb =
+                Fun.Lerp(secondaryMix, baseColor.XYZ, secondaryColor.XYZ)
+
+            if insideLens then
+                return V4f(1.0f, 0.0f, 0.0f, 1.0f)
             else
-                return v.c
+                return V4f(rgb, baseColor.W)
         }
+
 
 type Action =
     | SetFolder       of list<string>
@@ -59,6 +99,13 @@ type Action =
     | PrevPrimaryTexture
     | SetPrimaryTextureLast
     | MoveCameraToPointOfInterest
+    | NextSecondaryTexture
+    | PrevSecondaryTexture
+    | SetSecondaryOpacity of float32
+    | SetLensRadius of float32
+    | SetMousePos of V2f
+    | SetViewportSize of V2f
+    | SetMouseAndViewPort of V2f * V2f
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -113,7 +160,7 @@ let nearFarForBox (bb : Box3d) : float * float =
 let sceneEffects : list<FShade.Effect> = [
     toEffect SceneShaders.stableTrafo
     toEffect DefaultSurfaces.diffuseTexture
-    toEffect SceneShaders.maybeSecondary
+    toEffect SceneShaders.secondaryLens
 ]
 
 /// Build a default initial model. Optionally pre-load a folder
@@ -121,7 +168,13 @@ let sceneEffects : list<FShade.Effect> = [
 let initialModel (preload : Option<LoadedScene>) : Model =
     let bb = preload |> Option.map (fun s -> s.BoundingBox) |> Option.defaultValue Box3d.Invalid
     let near, far = nearFarForBox bb
+    let textureCount = preload |> Option.map (fun s -> s.TextureCount) |> Option.defaultValue 1
     let initialPrimary = preload |> Option.map (fun s -> max 0 (s.TextureCount - 1)) |> Option.defaultValue 0
+    let initialSecondary =
+        if textureCount > 1 then
+            (initialPrimary + 1) % textureCount
+        else
+            initialPrimary
     {
         loaded              = preload
         cameraState         = { FreeFlyController.initial with view = cameraForBox bb }
@@ -129,9 +182,13 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         far                 = far
         primaryTextureIndex = initialPrimary
         useSecondary        = false
-        secondaryOpacity    = 1.0
+        secondaryOpacity    = 1.0f
         lodVisEnabled       = false
+        secondaryTextureIndex = initialSecondary
+        lensRadius          = 0.1f
         fillMode            = FillMode.Fill
+        mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
+        viewportSize =      V2f(1280.0f, 800.0f)     // default-Fallback
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -182,11 +239,14 @@ let update (m : Model) (a : Action) =
         match tryLoadFolder path with
         | Loaded scene ->
             let near, far = nearFarForBox scene.BoundingBox
+            let primary = max 0 (scene.TextureCount - 1)
+            let secondary = wrapTextureIndex scene.TextureCount (primary + 1)
             { m with
                 loaded = Some scene
                 near = near
                 far = far
-                primaryTextureIndex = max 0 (scene.TextureCount - 1)
+                primaryTextureIndex = primary
+                secondaryTextureIndex = secondary
                 cameraState = { m.cameraState with view = cameraForBox scene.BoundingBox }
                 statusMessage = sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length scene.HierarchyPaths) path scene.TextureCount }
         | Failed msg ->
@@ -230,6 +290,33 @@ let update (m : Model) (a : Action) =
                 { m with statusMessage = "No point-of-interest file found." }
         | None ->
             { m with statusMessage = "Load an OPC folder before moving to a point of interest." }
+    | NextSecondaryTexture ->
+        match m.loaded with
+        | Some s -> { m with secondaryTextureIndex = wrapTextureIndex s.TextureCount (m.secondaryTextureIndex + 1) }
+        | None -> m
+    | PrevSecondaryTexture ->
+        match m.loaded with
+        | Some s -> { m with secondaryTextureIndex = wrapTextureIndex s.TextureCount (m.secondaryTextureIndex - 1) }
+        | None -> m
+    | SetSecondaryOpacity opacity ->
+        { m with secondaryOpacity =  clamp 0.0f 1.0f opacity  }
+    | SetLensRadius radius ->
+        { m with lensRadius = radius }
+    | SetMousePos pos ->
+        { m with mousePos = pos }
+    | SetViewportSize s ->
+        { m with viewportSize = s }
+    | SetMouseAndViewPort (mouse, size) ->
+        let safeSize =
+            if size.X > 1.0f && size.Y > 1.0f then
+                size
+            else
+                m.viewportSize
+
+        { m with
+            mousePos = mouse
+            viewportSize = safeSize }
+
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -239,17 +326,25 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     let primaryTexture : aval<Option<int>> =
         m.primaryTextureIndex |> AVal.map Some
 
+    let secondaryTexture : aval<Option<int>> =
+        m.secondaryTextureIndex |> AVal.map Some
+
     let opcSg : aval<ISg<Action>> =
         m.loaded |> AVal.map (function
             | Some scene ->
                 buildScene scene
                 |> OpcLoading.withPrimaryTextureIndex primaryTexture
+                |> OpcLoading.withSecondaryTextureIndex secondaryTexture
                 |> Sg.noEvents
             | None -> Sg.empty)
 
     Sg.dynamic opcSg
     |> Sg.effect sceneEffects
     |> Sg.uniform "UseSecondary" m.useSecondary
+    |> Sg.uniform "SecondaryOpacity" m.secondaryOpacity
+    |> Sg.uniform "MousePos" m.mousePos
+    |> Sg.uniform "ViewportSize" m.viewportSize
+    |> Sg.uniform "LensRadius" m.lensRadius
     |> Sg.fillMode m.fillMode
 
 let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveModel) : DomNode<Action> =
@@ -262,6 +357,18 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             (AttributeMap.ofList [
                 style "position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0"
                 attribute "data-samples" "1"
+                onEvent "mousemove"
+                    [ "clientX - currentTarget.getBoundingClientRect().left"
+                      "clientY - currentTarget.getBoundingClientRect().top"
+                      "currentTarget.getBoundingClientRect().width"
+                      "currentTarget.getBoundingClientRect().height" ]
+                    (fun values ->
+                        let x = System.Convert.ToSingle(values.[0])
+                        let y = System.Convert.ToSingle(values.[1])
+                        let w = System.Convert.ToSingle(values.[2])
+                        let h = System.Convert.ToSingle(values.[3])
+
+                        SetMouseAndViewPort (V2f(x, y), V2f(w, h)))
             ])
             (buildSceneSg buildScene m)
 
@@ -331,6 +438,24 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             div [ style "margin-top: 4px" ] [
                 button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
             ]
+            div [ style "margin-top: 6px" ] [
+                Incremental.div AttributeMap.empty (
+                    alist {
+                        let! loaded = m.loaded
+                        let! idx = m.secondaryTextureIndex
+                        let count = loaded |> Option.map (fun s -> s.TextureCount) |> Option.defaultValue 0
+
+                        yield div [ style "font-size: 12px; margin-bottom: 2px" ]
+                                  [ text (sprintf "secondary texture: %d / %d" idx (max 0 (count - 1))) ]
+
+                        yield button [ clazz "ui mini button"; onClick (fun _ -> PrevSecondaryTexture) ] [ text "<" ]
+                        yield button [ clazz "ui mini button"; onClick (fun _ -> NextSecondaryTexture) ] [ text ">" ]
+                    }
+                )
+            ]
+            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.25f) ] [ text "25%" ]
+            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
+            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]
         ]
 
     body [ style "margin: 0; overflow: hidden; background: black" ] [

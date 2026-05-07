@@ -33,7 +33,6 @@ module OpcLoading =
             Some (V3d(values.[0], values.[1], values.[2]))
 
     let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =    
-        Log.line "[POI] Looking for file in %s" rootDir
         let path =
             Path.Combine(
                 rootDir,
@@ -42,7 +41,7 @@ module OpcLoading =
             )
 
         if not (File.Exists path) then
-            Log.line "[POI] File does not exist: %s" path
+            Log.warn "[POI] File does not exist: %s" path
             []
         else
             try
@@ -174,8 +173,6 @@ module OpcLoading =
             (Some (SecondaryTexture.textures paths))
             (Some (SecondaryTexture.vertexAttributes paths))
             loader
-        |> SecondaryTexture.Sg.applySecondaryTextureId
-                (AVal.constant (Some defaultSecondaryTextureId))
 
     /// Wraps an `ISg` in an `AttributeParameters` applicator that selects
     /// the primary texture by its `LegacyId` index. Pass `None` to fall
@@ -189,4 +186,12 @@ module OpcLoading =
                           channel = ChannelReference.ChannelWithIndex 0 })
                 { AttributeParameters.defaultParams with selectedTexture = selected })
         Sg.AttributeParameters attribs sg
+
+    let withSecondaryTextureIndex (textureIndex : aval<Option<int>>) (sg : ISg) : ISg =
+        let textureId =
+            textureIndex |> AVal.map (fun idx ->
+                idx |> Option.map (fun i ->
+                    { texture = TextureReference.LegacyId i
+                      channel = ChannelReference.ChannelWithIndex 0 }))
+        sg |> SecondaryTexture.Sg.applySecondaryTextureId textureId
 

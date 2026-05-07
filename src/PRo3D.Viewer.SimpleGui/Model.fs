@@ -43,9 +43,13 @@ type Model = {
     primaryTextureIndex : int
     /// UI toggles, mirroring TestViewer.fs key bindings.
     useSecondary      : bool
-    secondaryOpacity  : float
+    secondaryOpacity  : float32
     lodVisEnabled     : bool
     fillMode          : FillMode
+    secondaryTextureIndex : int
+    lensRadius      : float32
+    mousePos        : V2f
+    viewportSize    : V2f
     /// Banner / error message displayed in the UI.
     statusMessage     : string
 }
