@@ -116,7 +116,7 @@ type Action =
     | SetSecondaryOpacity of float32
     | SetLensRadius of float32
     | SetMouseAndViewPort of V2f * V2f
-    | ToggleLensShape
+    | SetLensShapeRectangle of bool
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -324,8 +324,8 @@ let update (m : Model) (a : Action) =
         { m with
             mousePos = mouse
             viewportSize = safeSize }
-    | ToggleLensShape ->
-        { m with lensAsRectangle = not m.lensAsRectangle } 
+    | SetLensShapeRectangle rect ->
+        { m with lensAsRectangle = rect }
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -457,12 +457,6 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                     }
                 )
             ]
-            div [ style "margin-top: 4px" ] [
-                button [ clazz "ui mini button"; onClick (fun _ -> RecenterCamera) ] [ text "recenter" ]
-            ]
-            div [ style "margin-top: 4px" ] [
-                button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
-            ]
             div [ style "margin-top: 6px" ] [
                 Incremental.div AttributeMap.empty (
                     alist {
@@ -480,8 +474,56 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ]
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.25f) ] [ text "25%" ]
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
-            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]            
-            div [] [ labeledCheckbox "toggle lens shape" m.lensAsRectangle ToggleLensShape ]
+            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]      
+            div [ style "margin-top: 6px" ] [
+                Incremental.div AttributeMap.empty (
+                    alist {
+                        let! isRectangle = m.lensAsRectangle
+
+                        let rectangleAttrs =
+                            [
+                                attribute "type" "radio"
+                                attribute "name" "lens-shape"
+                                attribute "value" "rectangle"
+                                onClick (fun _ -> SetLensShapeRectangle true)
+                            ]
+
+                        let rectangleAttrs =
+                            if isRectangle then
+                                attribute "checked" "checked" :: rectangleAttrs
+                            else
+                                rectangleAttrs
+
+                        let circleAttrs =
+                            [
+                                attribute "type" "radio"
+                                attribute "name" "lens-shape"
+                                attribute "value" "circle"
+                                onClick (fun _ -> SetLensShapeRectangle false)
+                            ]
+
+                        let circleAttrs =
+                            if not isRectangle then
+                                attribute "checked" "checked" :: circleAttrs
+                            else
+                                circleAttrs
+
+                        yield div [ style "font-size: 12px; margin-bottom: 2px" ] [
+                            text "lens shape"
+                        ]
+
+                        yield label [ style "display: block; font-size: 12px" ] [
+                            input rectangleAttrs
+                            text " rectangle"
+                        ]
+
+                        yield label [ style "display: block; font-size: 12px" ] [
+                            input circleAttrs
+                            text " circle"
+                        ]
+                    }
+                )
+            ]
             div [ style "margin-top: 6px" ] [
                 Incremental.div AttributeMap.empty (
                     alist {
@@ -516,6 +558,12 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                         ]
                     }
                 )
+            ]            
+            div [ style "margin-top: 4px" ] [
+                button [ clazz "ui mini button"; onClick (fun _ -> RecenterCamera) ] [ text "recenter" ]
+            ]
+            div [ style "margin-top: 4px" ] [
+                button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
             ]
         ]
 
