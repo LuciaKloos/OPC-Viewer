@@ -200,7 +200,7 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         fillMode            = FillMode.Fill
         mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
         viewportSize =      V2f(1280.0f, 800.0f)     // default-Fallback
-        lensAsRectangle     = true
+        lensAsRectangle     = true       
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -313,7 +313,7 @@ let update (m : Model) (a : Action) =
     | SetSecondaryOpacity opacity ->
         { m with secondaryOpacity =  clamp 0.0f 1.0f opacity  }
     | SetLensRadius radius ->
-        { m with lensRadius = radius }
+        { m with lensRadius = clamp 0.01f 1.0f radius }
     | SetMouseAndViewPort (mouse, size) ->
         let safeSize =
             if size.X > 1.0f && size.Y > 1.0f then
@@ -325,8 +325,7 @@ let update (m : Model) (a : Action) =
             mousePos = mouse
             viewportSize = safeSize }
     | ToggleLensShape ->
-        { m with lensAsRectangle = not m.lensAsRectangle }
-
+        { m with lensAsRectangle = not m.lensAsRectangle } 
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -400,6 +399,20 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             }
         )
 
+    let parseFloat32Invariant (s : string) =
+        let clean =
+            s.Trim()
+             .Trim('"')
+             .Trim('\'')
+
+        match System.Double.TryParse(
+            clean,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture
+        ) with
+        | true, v -> float32 v
+        | _ -> 80.0f
+
     let toolbar =
         div [ style overlayStyle ] [
             div [] [
@@ -469,6 +482,41 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]            
             div [] [ labeledCheckbox "toggle lens shape" m.lensAsRectangle ToggleLensShape ]
+            div [ style "margin-top: 6px" ] [
+                Incremental.div AttributeMap.empty (
+                    alist {
+                        let! radius = m.lensRadius
+
+                        let radiusValue =
+                            radius.ToString(
+                                "0.00",
+                                System.Globalization.CultureInfo.InvariantCulture
+                            )
+
+                        yield div [] [
+                            div [ style "font-size: 12px; margin-bottom: 2px" ] [
+                                text (sprintf "lens radius: %.0f%%" (radius * 100.0f))
+                            ]
+
+                            input [
+                                attribute "type" "range"
+                                attribute "min" "0.01"
+                                attribute "max" "1"
+                                attribute "step" "0.01"
+                                attribute "value" radiusValue
+                                style "width: 160px"
+
+                                onEvent "oninput"
+                                    [ "event.target.value" ]
+                                    (fun values ->
+                                        values.[0]
+                                        |> parseFloat32Invariant
+                                        |> SetLensRadius)
+                            ]
+                        ]
+                    }
+                )
+            ]
         ]
 
     body [ style "margin: 0; overflow: hidden; background: black" ] [
