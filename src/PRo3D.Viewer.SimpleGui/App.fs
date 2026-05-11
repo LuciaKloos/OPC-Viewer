@@ -18,7 +18,7 @@ module private SceneShaders =
         member x.MousePos : V2f = uniform?MousePos
         member x.ViewportSize : V2f = uniform?ViewportSize
         member x.LensRadius : float32 = uniform?LensRadius
-       // member x.SecondaryTextureIndex : int = uniform?SecondaryTextureIndex
+        member x.LensAsRectangle : bool = uniform?LensAsRectangle
 
     let private secondarySampler =
         sampler2d {
@@ -45,7 +45,6 @@ module private SceneShaders =
 
     let secondaryLens (v : Vertex) =
         fragment {
-            // convert projected clip-space position into viewport pixel coordinates
             let clip = v.pos
             let ndc = clip.XY / clip.W
             let fragPx = 
@@ -77,10 +76,13 @@ module private SceneShaders =
             
             let halfWidthPx = radiusPx * 0.5f
             let halfHeightPx = radiusPx * 0.5f
-
+    
             let insideLens =
-                abs(dx) < halfWidthPx && abs(dy) < halfHeightPx     // for rectangle 
-                // dx * dx + dy * dy < radiusPx * radiusPx  // for circle
+                if uniform.LensAsRectangle then
+                    abs(dx) < halfWidthPx && abs(dy) < halfHeightPx   
+                else
+                    dx * dx + dy * dy < radiusPx * radiusPx
+                
 
             let secondaryMix =
                 if uniform.UseSecondary || insideLens then
@@ -114,6 +116,7 @@ type Action =
     | SetSecondaryOpacity of float32
     | SetLensRadius of float32
     | SetMouseAndViewPort of V2f * V2f
+    | ToggleLensShape
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -197,6 +200,7 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         fillMode            = FillMode.Fill
         mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
         viewportSize =      V2f(1280.0f, 800.0f)     // default-Fallback
+        lensAsRectangle     = true
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -320,6 +324,8 @@ let update (m : Model) (a : Action) =
         { m with
             mousePos = mouse
             viewportSize = safeSize }
+    | ToggleLensShape ->
+        { m with lensAsRectangle = not m.lensAsRectangle }
 
 
 /// Build the scene graph, wired up to all the toggle uniforms.
@@ -349,6 +355,7 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     |> Sg.uniform "MousePos" m.mousePos
     |> Sg.uniform "ViewportSize" m.viewportSize
     |> Sg.uniform "LensRadius" m.lensRadius
+    |> Sg.uniform "LensAsRectangle" m.lensAsRectangle
     |> Sg.fillMode m.fillMode
 
 let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveModel) : DomNode<Action> =
@@ -460,7 +467,8 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ]
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.25f) ] [ text "25%" ]
             button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
-            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]
+            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]            
+            div [] [ labeledCheckbox "toggle lens shape" m.lensAsRectangle ToggleLensShape ]
         ]
 
     body [ style "margin: 0; overflow: hidden; background: black" ] [

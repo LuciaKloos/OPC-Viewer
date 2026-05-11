@@ -50,6 +50,7 @@ type Model = {
     lensRadius      : float32
     mousePos        : V2f
     viewportSize    : V2f
+    lensAsRectangle : bool
     /// Banner / error message displayed in the UI.
     statusMessage     : string
 }
