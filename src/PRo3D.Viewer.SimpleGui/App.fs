@@ -166,6 +166,35 @@ let nearFarForBox (bb : Box3d) : float * float =
     else
         0.1, 1000.0
 
+let private freeFlyConfigForBox (bb : Box3d) : FreeFlyConfig =
+    if bb.IsValid && not bb.IsEmpty && bb.Size.NormMax > 0.0 then
+        let sceneSize = bb.Size.NormMax
+
+        // Camera speed in world units per second.
+        // Tune this multiplier if it feels too slow/fast.
+        let unitsPerSecond =
+            max 0.01 (sceneSize * 0.5)
+
+        let heuristic =
+            FreeFlyHeuristics.DefaultSpeedHeuristic(
+                0.0,
+                FreeFlyConfig.initial
+            )
+
+        let adjusted : FreeFlyHeuristics.SpeedHeuristic =
+            heuristic.AdjustToUnitsPerSecond unitsPerSecond
+
+        adjusted.Config
+    else
+        FreeFlyConfig.initial
+
+
+let private cameraForBoxWithFreeFlyConfig (bb : Box3d) : CameraControllerState =
+    { FreeFlyController.initial with
+        view = cameraForBox bb
+        freeFlyConfig = freeFlyConfigForBox bb
+    }
+
 /// Effects applied to the OPC scene. Exposed so the offscreen-screenshot
 /// code path can reuse the same shader chain as the interactive view.
 let sceneEffects : list<FShade.Effect> = [
@@ -188,7 +217,7 @@ let initialModel (preload : Option<LoadedScene>) : Model =
             initialPrimary
     {
         loaded              = preload
-        cameraState         = { FreeFlyController.initial with view = cameraForBox bb }
+        cameraState         = cameraForBoxWithFreeFlyConfig bb
         near                = near
         far                 = far
         primaryTextureIndex = initialPrimary
@@ -244,7 +273,9 @@ let private wrapTextureIndex (count : int) (idx : int) =
 let update (m : Model) (a : Action) =
     match a with
     | CameraAction msg ->
-        { m with cameraState = FreeFlyController.update m.cameraState msg }
+        let newCamera = FreeFlyController.update m.cameraState msg
+        logCamera newCamera
+        { m with cameraState = newCamera }
     | SetFolder [] ->
         { m with statusMessage = "no folder chosen" }
     | SetFolder (path :: _) ->
@@ -259,7 +290,7 @@ let update (m : Model) (a : Action) =
                 far = far
                 primaryTextureIndex = primary
                 secondaryTextureIndex = secondary
-                cameraState = { m.cameraState with view = cameraForBox scene.BoundingBox }
+                cameraState = cameraForBoxWithFreeFlyConfig scene.BoundingBox 
                 statusMessage = sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length scene.HierarchyPaths) path scene.TextureCount }
         | Failed msg ->
             { m with statusMessage = msg }
@@ -272,7 +303,7 @@ let update (m : Model) (a : Action) =
         { m with fillMode = next }
     | RecenterCamera ->
         match m.loaded with
-        | Some s -> { m with cameraState = { m.cameraState with view = cameraForBox s.BoundingBox } }
+        | Some s -> { m with cameraState = cameraForBoxWithFreeFlyConfig s.BoundingBox }
         | None -> m
     | NextPrimaryTexture ->
         match m.loaded with
