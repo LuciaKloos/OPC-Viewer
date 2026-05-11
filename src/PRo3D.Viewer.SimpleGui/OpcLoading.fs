@@ -34,9 +34,9 @@ module OpcLoading =
 
     let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =    
         let path =
-            Path.Combine(
+            Path.Combine(   // TODO: make this more flexible / configurable instead of hardcoding the expected relative path from the
                 rootDir,
-                "g_01960mm_spc_dtm_dimo_0000n00000_v003_0_0",
+                "g_01960mm_spc_dtm_dimo_0000n00000_v003_0_0",   
                 "points-of-interest.json"
             )
 
@@ -142,9 +142,9 @@ module OpcLoading =
 
     /// Default texture id used by the multi-texturing pipeline when nothing
     /// more specific is selected. `LegacyId 0` picks the first texture layer.
-    let private defaultSecondaryTextureId : TextureId =
-        { texture = TextureReference.LegacyId 0
-          channel = ChannelReference.ChannelWithIndex 0 }
+    //let private defaultSecondaryTextureId : TextureId =
+    //    { texture = TextureReference.LegacyId 0
+    //      channel = ChannelReference.ChannelWithIndex 0 }
 
     /// Build the scene graph for one patch hierarchy, including the multi-texturing
     /// hooks from `SecondaryTexture` so the UI can toggle a secondary layer on/off.

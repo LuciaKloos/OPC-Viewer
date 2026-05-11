@@ -18,7 +18,7 @@ module private SceneShaders =
         member x.MousePos : V2f = uniform?MousePos
         member x.ViewportSize : V2f = uniform?ViewportSize
         member x.LensRadius : float32 = uniform?LensRadius
-        member x.SecondaryTextureIndex : int = uniform?SecondaryTextureIndex
+       // member x.SecondaryTextureIndex : int = uniform?SecondaryTextureIndex
 
     let private secondarySampler =
         sampler2d {
@@ -45,11 +45,17 @@ module private SceneShaders =
 
     let secondaryLens (v : Vertex) =
         fragment {
+            // convert projected clip-space position into viewport pixel coordinates
+            let clip = v.pos
+            let ndc = clip.XY / clip.W
+            let fragPx = 
+                V2f (
+                    (ndc.X * 0.5f + 0.5f) * uniform.ViewportSize.X,
+                    (ndc.Y * 0.5f + 0.5f) * uniform.ViewportSize.Y
+                )
+
             let baseColor = v.c
             let secondaryColor = secondarySampler.Sample(v.tc)
-
-            let fragPx =
-                v.pos.XY
 
             let mousePx =
                 V2f(
@@ -68,9 +74,13 @@ module private SceneShaders =
 
             let radiusPx =
                 uniform.LensRadius * minViewportSize
+            
+            let halfWidthPx = radiusPx * 0.5f
+            let halfHeightPx = radiusPx * 0.5f
 
             let insideLens =
-                dx * dx + dy * dy < radiusPx * radiusPx
+                abs(dx) < halfWidthPx && abs(dy) < halfHeightPx     // for rectangle 
+                // dx * dx + dy * dy < radiusPx * radiusPx  // for circle
 
             let secondaryMix =
                 if uniform.UseSecondary || insideLens then
@@ -82,7 +92,7 @@ module private SceneShaders =
                 Fun.Lerp(secondaryMix, baseColor.XYZ, secondaryColor.XYZ)
 
             if insideLens then
-                return V4f(1.0f, 0.0f, 0.0f, 1.0f)
+                return V4f(rgb, 1.0f)
             else
                 return V4f(rgb, baseColor.W)
         }
@@ -103,8 +113,6 @@ type Action =
     | PrevSecondaryTexture
     | SetSecondaryOpacity of float32
     | SetLensRadius of float32
-    | SetMousePos of V2f
-    | SetViewportSize of V2f
     | SetMouseAndViewPort of V2f * V2f
 
 type LoadOutcome =
@@ -302,10 +310,6 @@ let update (m : Model) (a : Action) =
         { m with secondaryOpacity =  clamp 0.0f 1.0f opacity  }
     | SetLensRadius radius ->
         { m with lensRadius = radius }
-    | SetMousePos pos ->
-        { m with mousePos = pos }
-    | SetViewportSize s ->
-        { m with viewportSize = s }
     | SetMouseAndViewPort (mouse, size) ->
         let safeSize =
             if size.X > 1.0f && size.Y > 1.0f then
@@ -357,18 +361,19 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             (AttributeMap.ofList [
                 style "position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0"
                 attribute "data-samples" "1"
-                onEvent "mousemove"
-                    [ "clientX - currentTarget.getBoundingClientRect().left"
-                      "clientY - currentTarget.getBoundingClientRect().top"
-                      "currentTarget.getBoundingClientRect().width"
-                      "currentTarget.getBoundingClientRect().height" ]
-                    (fun values ->
-                        let x = System.Convert.ToSingle(values.[0])
-                        let y = System.Convert.ToSingle(values.[1])
-                        let w = System.Convert.ToSingle(values.[2])
-                        let h = System.Convert.ToSingle(values.[3])
-
-                        SetMouseAndViewPort (V2f(x, y), V2f(w, h)))
+                onEvent "onmousemove"
+                       [
+                            "(function(){var t=event.currentTarget;var r=t.getBoundingClientRect();return event.clientX-r.left;})()";
+                            "(function(){var t=event.currentTarget;var r=t.getBoundingClientRect();return event.clientY-r.top;})()";
+                            "(function(){var t=event.currentTarget;var r=t.getBoundingClientRect();return r.width;})()";
+                            "(function(){var t=event.currentTarget;var r=t.getBoundingClientRect();return r.height;})()"
+                        ]
+                        (fun values ->
+                            let x = System.Convert.ToSingle(values.[0])
+                            let y = System.Convert.ToSingle(values.[1])
+                            let w = System.Convert.ToSingle(values.[2])
+                            let h = System.Convert.ToSingle(values.[3])
+                            SetMouseAndViewPort (V2f(x, y), V2f(w, h)))
             ])
             (buildSceneSg buildScene m)
 
