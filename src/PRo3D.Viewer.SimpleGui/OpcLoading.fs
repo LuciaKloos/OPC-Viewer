@@ -34,9 +34,8 @@ module OpcLoading =
 
     let loadPointsOfInterest (rootDir : string) : list<PointOfInterestCamera> =    
         let path =
-            Path.Combine(   // TODO: make this more flexible / configurable instead of hardcoding the expected relative path from the
-                rootDir,
-                "g_01960mm_spc_dtm_dimo_0000n00000_v003_0_0",   
+            Path.Combine(   
+                rootDir,  
                 "points-of-interest.json"
             )
 
