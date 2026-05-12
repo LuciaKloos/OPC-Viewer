@@ -173,7 +173,7 @@ let private freeFlyConfigForBox (bb : Box3d) : FreeFlyConfig =
         // Camera speed in world units per second.
         // Tune this multiplier if it feels too slow/fast.
         let unitsPerSecond =
-            max 0.01 (sceneSize * 0.5)
+            max 0.01 (sceneSize * 0.25)
 
         let heuristic =
             FreeFlyHeuristics.DefaultSpeedHeuristic(
@@ -274,7 +274,7 @@ let update (m : Model) (a : Action) =
     match a with
     | CameraAction msg ->
         let newCamera = FreeFlyController.update m.cameraState msg
-        logCamera newCamera
+        //logCamera newCamera
         { m with cameraState = newCamera }
     | SetFolder [] ->
         { m with statusMessage = "no folder chosen" }
@@ -388,6 +388,14 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     |> Sg.uniform "LensAsRectangle" m.lensAsRectangle
     |> Sg.fillMode m.fillMode
 
+/// savely converts a string to a float32, independent of the computer language settings
+let private parseEventFloat32 (s : string) =
+    System.Single.Parse(
+        s.Trim().Trim('"').Trim('\''),
+        System.Globalization.NumberStyles.Float,
+        System.Globalization.CultureInfo.InvariantCulture
+    )
+
 let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveModel) : DomNode<Action> =
     let frustum =
         AVal.map2 (fun n f -> Frustum.perspective 60.0 n f 1.0) m.near m.far
@@ -406,10 +414,10 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                             "(function(){var t=event.currentTarget;var r=t.getBoundingClientRect();return r.height;})()"
                         ]
                         (fun values ->
-                            let x = System.Convert.ToSingle(values.[0])
-                            let y = System.Convert.ToSingle(values.[1])
-                            let w = System.Convert.ToSingle(values.[2])
-                            let h = System.Convert.ToSingle(values.[3])
+                            let x = parseEventFloat32 values.[0]
+                            let y = parseEventFloat32 values.[1]
+                            let w = parseEventFloat32 values.[2]
+                            let h = parseEventFloat32 values.[3]
                             SetMouseAndViewPort (V2f(x, y), V2f(w, h)))
             ])
             (buildSceneSg buildScene m)
