@@ -19,6 +19,10 @@ module private SceneShaders =
         member x.ViewportSize : V2f = uniform?ViewportSize
         member x.LensRadius : float32 = uniform?LensRadius
         member x.LensAsRectangle : bool = uniform?LensAsRectangle
+        member x.TextureCombiner : TextureCombiner = uniform?TextureCombiner
+        member x.TransferFunctionMode : TransferfunctionMode = uniform?TransferFunctionMode
+        member x.TFRange : V2d = uniform?TFRange
+        member x.TFBlendFactor : float = uniform?TFBlendFactor
 
     let private secondarySampler =
         sampler2d {
@@ -27,6 +31,15 @@ module private SceneShaders =
             addressU WrapMode.Wrap
             addressV WrapMode.Wrap
         }
+
+    let private transferFunctionSampler =
+        sampler2d {
+            texture uniform?SecondaryTextureTransferFunction
+            filter Filter.MinMagPoint
+            addressU WrapMode.Clamp
+            addressV WrapMode.Clamp
+        }
+
 
     let stableTrafo (v : Vertex) =
         vertex {
@@ -45,17 +58,20 @@ module private SceneShaders =
 
     let secondaryLens (v : Vertex) =
         fragment {
+            let baseColor = v.c
+            let mutable color = baseColor
+
+            // screen-space fragment position in pixels
             let clip = v.pos
             let ndc = clip.XY / clip.W
+
             let fragPx = 
                 V2f (
                     (ndc.X * 0.5f + 0.5f) * uniform.ViewportSize.X,
                     (ndc.Y * 0.5f + 0.5f) * uniform.ViewportSize.Y
                 )
 
-            let baseColor = v.c
-            let secondaryColor = secondarySampler.Sample(v.tc)
-
+            // mouse position in same coordinate system as fragPos
             let mousePx =
                 V2f(
                     uniform.MousePos.X,
@@ -90,15 +106,46 @@ module private SceneShaders =
                 else
                     0.0f
 
-            let rgb =
-                Fun.Lerp(secondaryMix, baseColor.XYZ, secondaryColor.XYZ)
+            match uniform.TextureCombiner with 
+            | TextureCombiner.Primary -> 
+                color <- v.c
 
-            if insideLens then
-                return V4f(rgb, 1.0f)
-            else
-                return V4f(rgb, baseColor.W)
+            | _ ->
+                let secondaryColorRaw = secondarySampler.Sample(v.tc)
+
+                let secondaryColor = 
+                    match uniform.TransferFunctionMode with
+                    | TransferfunctionMode.Ramp ->
+                        let rampTc = V2f(secondaryColorRaw.X, 0.5f) // use red channel as index into the ramp texture
+                        transferFunctionSampler.Sample(rampTc)
+                    | _ ->
+                        // passthrough: use the secondary texture color directly
+                        secondaryColorRaw
+
+                // first compute secondary texture without lens
+                let combinedColor =
+                    match uniform.TextureCombiner with
+                    | TextureCombiner.Secondary ->
+                        secondaryColor
+                    | TextureCombiner.Multiply ->
+                        baseColor * secondaryColor
+                    | TextureCombiner.Blend ->
+                        Fun.Lerp(0.5f, baseColor, secondaryColor)
+                    | _ -> 
+                        baseColor
+
+                let rgb =
+                    Fun.Lerp(secondaryMix, baseColor.XYZ, combinedColor.XYZ)
+
+                let alpha = 
+                    if insideLens then
+                        1.0f
+                    else
+                        baseColor.W
+
+                color <- V4f(rgb, alpha)
+            return color
         }
-
 
 type Action =
     | SetFolder       of list<string>
@@ -117,6 +164,8 @@ type Action =
     | SetLensRadius of float32
     | SetMouseAndViewPort of V2f * V2f
     | SetLensShapeRectangle of bool
+    | SetTransferFunctionMode of TransferfunctionMode
+    | SetTextureCombiner of TextureCombiner
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -229,7 +278,9 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         fillMode            = FillMode.Fill
         mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
         viewportSize =      V2f(1280.0f, 800.0f)     // default-Fallback
-        lensAsRectangle     = true       
+        lensAsRectangle     = true   
+        transferFunctionMode = TransferfunctionMode.Passthrough
+        textureCombiner = TextureCombiner.Primary
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -357,6 +408,15 @@ let update (m : Model) (a : Action) =
             viewportSize = safeSize }
     | SetLensShapeRectangle rect ->
         { m with lensAsRectangle = rect }
+    | SetTransferFunctionMode mode ->
+        { m with transferFunctionMode = mode }
+    | SetTextureCombiner combiner ->
+            { m with textureCombiner = combiner }
+
+let private transferFunctionTexture : aval<ITexture> =
+    AVal.constant (
+        PRo3D.Base.ColorMaps.colorMaps.["plasma"].Force() :> ITexture
+    )
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -369,6 +429,7 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     let secondaryTexture : aval<Option<int>> =
         m.secondaryTextureIndex |> AVal.map Some
 
+    // Hinweis: die transferFunctionTexture-Variable entfernt (falscher Typ).
     let opcSg : aval<ISg<Action>> =
         m.loaded |> AVal.map (function
             | Some scene ->
@@ -380,12 +441,15 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
 
     Sg.dynamic opcSg
     |> Sg.effect sceneEffects
+    |> Sg.texture "SecondaryTextureTransferFunction" transferFunctionTexture  // entfernt
     |> Sg.uniform "UseSecondary" m.useSecondary
     |> Sg.uniform "SecondaryOpacity" m.secondaryOpacity
     |> Sg.uniform "MousePos" m.mousePos
     |> Sg.uniform "ViewportSize" m.viewportSize
     |> Sg.uniform "LensRadius" m.lensRadius
     |> Sg.uniform "LensAsRectangle" m.lensAsRectangle
+    |> Sg.uniform "TransferFunctionMode" ( m.transferFunctionMode |> AVal.map int )
+    |> Sg.uniform "TextureCombiner" ( m.textureCombiner |> AVal.map int )
     |> Sg.fillMode m.fillMode
 
 /// savely converts a string to a float32, independent of the computer language settings
@@ -603,6 +667,17 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ]
             div [ style "margin-top: 4px" ] [
                 button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
+            ]
+            div [ style "margin-top: 4px" ] [
+                div [ style "font-size: 12px; margin-bottom: 4px" ] [ text "Transfer Function" ]
+                Incremental.div AttributeMap.empty (
+                    alist {
+                        // Zwei einfache Buttons als Platzhalter für eine Dropdown-UI.
+                        // use textureCombiner instead
+                        yield button [ clazz "ui mini button"; onClick (fun _ -> SetTransferFunctionMode TransferfunctionMode.Ramp) ] [ text "ramp" ]
+                        yield button [ clazz "ui mini button"; onClick (fun _ -> SetTransferFunctionMode TransferfunctionMode.Passthrough) ] [ text "passthrough" ]
+                    }
+                )
             ]
         ]
 

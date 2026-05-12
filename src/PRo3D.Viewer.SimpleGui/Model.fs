@@ -29,6 +29,16 @@ type LoadedScene = {
     PointsOfInterest  : list<PointOfInterestCamera>
 }
 
+type TransferfunctionMode =
+    | Passthrough = 0
+    | Ramp = 1
+
+type TextureCombiner =
+    | Primary = 0
+    | Secondary = 1
+    | Multiply = 2
+    | Blend = 3
+
 [<ModelType>]
 type Model = {
     /// Currently loaded scene. None until the user picked a folder.
@@ -51,6 +61,8 @@ type Model = {
     mousePos        : V2f
     viewportSize    : V2f
     lensAsRectangle : bool
+    transferFunctionMode : TransferfunctionMode
+    textureCombiner : TextureCombiner
     /// Banner / error message displayed in the UI.
     statusMessage     : string
 }
