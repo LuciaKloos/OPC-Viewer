@@ -63,6 +63,8 @@ type Model = {
     lensAsRectangle : bool
     transferFunctionMode : TransferfunctionMode
     textureCombiner : TextureCombiner
+    TFBlendFactor : float32
+    TFRange : V2f
     /// Banner / error message displayed in the UI.
     statusMessage     : string
 }

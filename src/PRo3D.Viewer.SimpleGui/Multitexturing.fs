@@ -6,11 +6,14 @@ open Aardvark.Rendering
 module ColorMaps =
 
     type private Marker = Marker
-
     let colorMaps = 
         let loadTexture (name : string) =
             lazy
-                let stream = typeof<Marker>.Assembly.GetManifestResourceStream(sprintf "PRo3D.Base.resources.%s" name)
+                let stream = typeof<Marker>.Assembly.GetManifestResourceStream(sprintf "PRo3D.Viewer.SimpleGui.resources.%s" name)
+
+                if isNull stream then
+                  failwithf "Could not find embedded resource."
+
                 PixTexture2d(PixImageMipMap(PixImage.Load(stream)), false)
         Map.ofList [ 
             "plasma",   loadTexture "plasma.png"

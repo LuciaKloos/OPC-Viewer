@@ -21,8 +21,8 @@ module private SceneShaders =
         member x.LensAsRectangle : bool = uniform?LensAsRectangle
         member x.TextureCombiner : TextureCombiner = uniform?TextureCombiner
         member x.TransferFunctionMode : TransferfunctionMode = uniform?TransferFunctionMode
-        member x.TFRange : V2d = uniform?TFRange
-        member x.TFBlendFactor : float = uniform?TFBlendFactor
+        member x.TFRange : V2f = uniform?TFRange
+        member x.TFBlendFactor : float32 = uniform?TFBlendFactor
 
     let private secondarySampler =
         sampler2d {
@@ -58,9 +58,7 @@ module private SceneShaders =
 
     let secondaryLens (v : Vertex) =
         fragment {
-            let baseColor = v.c
-            let mutable color = baseColor
-
+            // check if pixel is inside lens area:
             // screen-space fragment position in pixels
             let clip = v.pos
             let ndc = clip.XY / clip.W
@@ -99,51 +97,64 @@ module private SceneShaders =
                 else
                     dx * dx + dy * dy < radiusPx * radiusPx
                 
+            let range = uniform.TFRange
 
             let secondaryMix =
                 if uniform.UseSecondary || insideLens then
                     uniform.SecondaryOpacity
                 else
                     0.0f
-
+            let mutable color = v.c
+            
             match uniform.TextureCombiner with 
             | TextureCombiner.Primary -> 
                 color <- v.c
 
             | _ ->
-                let secondaryColorRaw = secondarySampler.Sample(v.tc)
 
                 let secondaryColor = 
                     match uniform.TransferFunctionMode with
                     | TransferfunctionMode.Ramp ->
-                        let rampTc = V2f(secondaryColorRaw.X, 0.5f) // use red channel as index into the ramp texture
-                        transferFunctionSampler.Sample(rampTc)
+                        let range = uniform.TFRange
+                        let e = secondarySampler.Sample(v.tc)
+                        if e.X > range.X && e.X < range.Y then
+                            let my = (e.X - range.X) / (range.Y - range.X)
+                            transferFunctionSampler.Sample(V2f(my, 0.5f))
+                        else
+                            v.c
+                        
+                    | TransferfunctionMode.Passthrough ->
+                        secondarySampler.Sample(v.tc)
                     | _ ->
-                        // passthrough: use the secondary texture color directly
-                        secondaryColorRaw
+                        v.c
 
                 // first compute secondary texture without lens
-                let combinedColor =
+                let combinedColor : V4f =
                     match uniform.TextureCombiner with
                     | TextureCombiner.Secondary ->
                         secondaryColor
                     | TextureCombiner.Multiply ->
-                        baseColor * secondaryColor
+                        V4f(v.c.XYZ * secondaryColor.XYZ, 1.0f)
                     | TextureCombiner.Blend ->
-                        Fun.Lerp(0.5f, baseColor, secondaryColor)
+                        V4f(v.c.XYZ * (1.0f - uniform.TFBlendFactor) + 
+                            secondaryColor.XYZ * uniform.TFBlendFactor, 
+                            1.0f)
                     | _ -> 
-                        baseColor
+                        v.c
 
                 let rgb =
-                    Fun.Lerp(secondaryMix, baseColor.XYZ, combinedColor.XYZ)
+                    Fun.Lerp(secondaryMix, color.XYZ, combinedColor.XYZ)
 
                 let alpha = 
                     if insideLens then
                         1.0f
                     else
-                        baseColor.W
+                        color.W
 
                 color <- V4f(rgb, alpha)
+         
+
+            
             return color
         }
 
@@ -166,6 +177,8 @@ type Action =
     | SetLensShapeRectangle of bool
     | SetTransferFunctionMode of TransferfunctionMode
     | SetTextureCombiner of TextureCombiner
+    | SetTFBlendFactor of float32
+    | SetTFRange of V2f
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -281,6 +294,8 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         lensAsRectangle     = true   
         transferFunctionMode = TransferfunctionMode.Passthrough
         textureCombiner = TextureCombiner.Primary
+        TFBlendFactor = 0.5f
+        TFRange = V2f(0.0f, 1.0f)
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -412,11 +427,20 @@ let update (m : Model) (a : Action) =
         { m with transferFunctionMode = mode }
     | SetTextureCombiner combiner ->
             { m with textureCombiner = combiner }
+    | SetTFBlendFactor factor ->
+            { m with TFBlendFactor = clamp 0.0f 1.0f factor }
+    | SetTFRange range ->
+            let safeRange =
+                if range.Y > range.X then
+                    range
+                else
+                    m.TFRange
+            { m with TFRange = safeRange }
 
-let private transferFunctionTexture : aval<ITexture> =
-    AVal.constant (
-        PRo3D.Base.ColorMaps.colorMaps.["plasma"].Force() :> ITexture
-    )
+let private defaultTransferFunctionTexture =
+    PRo3D.Base.ColorMaps.colorMaps
+    |> Map.find "plasma"
+    |> fun tex -> tex.Value
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -429,7 +453,6 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     let secondaryTexture : aval<Option<int>> =
         m.secondaryTextureIndex |> AVal.map Some
 
-    // Hinweis: die transferFunctionTexture-Variable entfernt (falscher Typ).
     let opcSg : aval<ISg<Action>> =
         m.loaded |> AVal.map (function
             | Some scene ->
@@ -441,7 +464,6 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
 
     Sg.dynamic opcSg
     |> Sg.effect sceneEffects
-    |> Sg.texture "SecondaryTextureTransferFunction" transferFunctionTexture  // entfernt
     |> Sg.uniform "UseSecondary" m.useSecondary
     |> Sg.uniform "SecondaryOpacity" m.secondaryOpacity
     |> Sg.uniform "MousePos" m.mousePos
@@ -450,6 +472,9 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     |> Sg.uniform "LensAsRectangle" m.lensAsRectangle
     |> Sg.uniform "TransferFunctionMode" ( m.transferFunctionMode |> AVal.map int )
     |> Sg.uniform "TextureCombiner" ( m.textureCombiner |> AVal.map int )
+    |> Sg.uniform "TFBlendFactor" m.TFBlendFactor
+    |> Sg.uniform "TFRange" m.TFRange
+    |> Sg.texture "SecondaryTextureTransferFunction" (AVal.constant defaultTransferFunctionTexture)
     |> Sg.fillMode m.fillMode
 
 /// savely converts a string to a float32, independent of the computer language settings
