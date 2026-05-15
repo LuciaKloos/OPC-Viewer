@@ -6,10 +6,16 @@
     <RootNamespace>PRo3D.Viewer.SimpleGui</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="resources\plasma.png" />
+    <EmbeddedResource Include="resources\oranges.png" />
+    <EmbeddedResource Include="resources\spectral.png" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="paket.references" />
     <None Include="RunAdaptify.fsx" />
     <Compile Include="Model.fs" />
     <Compile Include="Model.g.fs" />
+	<Compile Include="Multitexturing.fs" />
     <Compile Include="OpcLoading.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Program.fs" />

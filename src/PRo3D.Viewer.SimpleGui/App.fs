@@ -19,8 +19,8 @@ module private SceneShaders =
         member x.ViewportSize : V2f = uniform?ViewportSize
         member x.LensRadius : float32 = uniform?LensRadius
         member x.LensAsRectangle : bool = uniform?LensAsRectangle
-        member x.TextureCombiner : TextureCombiner = uniform?TextureCombiner
-        member x.TransferFunctionMode : TransferfunctionMode = uniform?TransferFunctionMode
+        member x.TextureCombiner : int = uniform?TextureCombiner
+        member x.TransferFunctionMode : int = uniform?TransferFunctionMode
         member x.TFRange : V2f = uniform?TFRange
         member x.TFBlendFactor : float32 = uniform?TFBlendFactor
 
@@ -98,70 +98,75 @@ module private SceneShaders =
                     dx * dx + dy * dy < radiusPx * radiusPx
                 
             let range = uniform.TFRange
+            
+            let baseColor = v.c
+            let secondaryColor = secondarySampler.Sample(v.tc)
+           
+
+            let secondaryColorTF = 
+                match uniform.TransferFunctionMode with
+                | 1 ->  // ramp
+                    let range = uniform.TFRange
+
+                    if secondaryColor.X > range.X && secondaryColor.X < range.Y then
+                        let my = (secondaryColor.X - range.X) / (range.Y - range.X)
+                        transferFunctionSampler.Sample(V2f(my, 0.5f))
+                    else
+                        V4f(1.0f, 0.0f, 0.0f, 1.0f) // debug : red outside of range
+                        
+                | 2 ->  // passthrough
+                    secondaryColor
+                | _ ->
+                    baseColor
+
+            // first compute secondary texture without lens
+            let combinedColor : V4f =
+                match uniform.TextureCombiner with
+                | 1 ->  // primary
+                    baseColor
+
+                | 2 ->  // secondary
+                    secondaryColorTF
+
+                |  3 ->  // multiply
+                    V4f(baseColor.XYZ * secondaryColorTF.XYZ, 2.0f)
+
+                | 4 ->  // blend
+                    V4f(baseColor.XYZ * (1.0f - uniform.TFBlendFactor) + 
+                        secondaryColorTF.XYZ * uniform.TFBlendFactor, 
+                        1.0f)
+
+                | _ -> 
+                    baseColor
 
             let secondaryMix =
-                if uniform.UseSecondary || insideLens then
+                if uniform.UseSecondary && insideLens then  
                     uniform.SecondaryOpacity
                 else
                     0.0f
-            let mutable color = v.c
-            
-            match uniform.TextureCombiner with 
-            | TextureCombiner.Primary -> 
-                color <- v.c
 
-            | _ ->
+            let rgb =
+                Fun.Lerp(secondaryMix, baseColor.XYZ, combinedColor.XYZ)
 
-                let secondaryColor = 
-                    match uniform.TransferFunctionMode with
-                    | TransferfunctionMode.Ramp ->
-                        let range = uniform.TFRange
-                        let e = secondarySampler.Sample(v.tc)
-                        if e.X > range.X && e.X < range.Y then
-                            let my = (e.X - range.X) / (range.Y - range.X)
-                            transferFunctionSampler.Sample(V2f(my, 0.5f))
-                        else
-                            v.c
-                        
-                    | TransferfunctionMode.Passthrough ->
-                        secondarySampler.Sample(v.tc)
-                    | _ ->
-                        v.c
+            let alpha = 
+                if uniform.UseSecondary && insideLens then
+                    1.0f
+                else
+                    baseColor.W
+                       
+            let debugRed = 
+                if insideLens then
+                    combinedColor.XYZ
+                else
+                    V3f(1.0f, 1.0f, 1.0f)
 
-                // first compute secondary texture without lens
-                let combinedColor : V4f =
-                    match uniform.TextureCombiner with
-                    | TextureCombiner.Secondary ->
-                        secondaryColor
-                    | TextureCombiner.Multiply ->
-                        V4f(v.c.XYZ * secondaryColor.XYZ, 1.0f)
-                    | TextureCombiner.Blend ->
-                        V4f(v.c.XYZ * (1.0f - uniform.TFBlendFactor) + 
-                            secondaryColor.XYZ * uniform.TFBlendFactor, 
-                            1.0f)
-                    | _ -> 
-                        v.c
-
-                let rgb =
-                    Fun.Lerp(secondaryMix, color.XYZ, combinedColor.XYZ)
-
-                let alpha = 
-                    if insideLens then
-                        1.0f
-                    else
-                        color.W
-
-                color <- V4f(rgb, alpha)
-         
-
-            
-            return color
+            return V4f(rgb, alpha)
         }
 
 type Action =
     | SetFolder       of list<string>
     | CameraAction    of FreeFlyController.Message
-    | ToggleSecondary
+    | ToggleLens
     | ToggleLodVis
     | ToggleFillMode
     | RecenterCamera
@@ -175,10 +180,11 @@ type Action =
     | SetLensRadius of float32
     | SetMouseAndViewPort of V2f * V2f
     | SetLensShapeRectangle of bool
-    | SetTransferFunctionMode of TransferfunctionMode
+    | SetTransferFunctionMode of TransferFunctionMode
     | SetTextureCombiner of TextureCombiner
     | SetTFBlendFactor of float32
     | SetTFRange of V2f
+    | SetTransferFunctionColorMap of string
 
 type LoadOutcome =
     | Loaded of LoadedScene
@@ -290,12 +296,13 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         lensRadius          = 0.1f
         fillMode            = FillMode.Fill
         mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
-        viewportSize =      V2f(1280.0f, 800.0f)     // default-Fallback
+        viewportSize        = V2f(1280.0f, 800.0f)     // default-Fallback
         lensAsRectangle     = true   
-        transferFunctionMode = TransferfunctionMode.Passthrough
-        textureCombiner = TextureCombiner.Primary
+        transferFunctionMode = TransferFunctionMode.Passthrough
+        textureCombiner = TextureCombiner.Secondary
         TFBlendFactor = 0.5f
         TFRange = V2f(0.0f, 1.0f)
+        transferFunctionColorMap = "plasma"
         statusMessage       =
             match preload with
             | Some s -> sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length s.HierarchyPaths) s.RootDirectory s.TextureCount
@@ -360,7 +367,7 @@ let update (m : Model) (a : Action) =
                 statusMessage = sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length scene.HierarchyPaths) path scene.TextureCount }
         | Failed msg ->
             { m with statusMessage = msg }
-    | ToggleSecondary ->
+    | ToggleLens ->
         { m with useSecondary = not m.useSecondary }
     | ToggleLodVis ->
         { m with lodVisEnabled = not m.lodVisEnabled }
@@ -436,11 +443,17 @@ let update (m : Model) (a : Action) =
                 else
                     m.TFRange
             { m with TFRange = safeRange }
+    | SetTransferFunctionColorMap name ->
+            { m with transferFunctionColorMap = name }
 
-let private defaultTransferFunctionTexture =
-    PRo3D.Base.ColorMaps.colorMaps
-    |> Map.find "plasma"
-    |> fun tex -> tex.Value
+let private transferFunctionTexture (name : string) =
+    match PRo3D.Base.ColorMaps.colorMaps |> Map.tryFind name with
+    | Some tex ->
+        tex.Value
+    | None ->    // default
+        PRo3D.Base.ColorMaps.colorMaps
+        |> Map.find "plasma"
+        |> fun tex -> tex.Value
 
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
@@ -462,6 +475,9 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
                 |> Sg.noEvents
             | None -> Sg.empty)
 
+    let selectTransferFunctionTexture =
+        m.transferFunctionColorMap |> AVal.map transferFunctionTexture  
+
     Sg.dynamic opcSg
     |> Sg.effect sceneEffects
     |> Sg.uniform "UseSecondary" m.useSecondary
@@ -470,11 +486,11 @@ let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (
     |> Sg.uniform "ViewportSize" m.viewportSize
     |> Sg.uniform "LensRadius" m.lensRadius
     |> Sg.uniform "LensAsRectangle" m.lensAsRectangle
-    |> Sg.uniform "TransferFunctionMode" ( m.transferFunctionMode |> AVal.map int )
-    |> Sg.uniform "TextureCombiner" ( m.textureCombiner |> AVal.map int )
+    |> Sg.uniform "TransferFunctionMode" (m.transferFunctionMode |> AVal.map (fun mode -> int mode))
+    |> Sg.uniform "TextureCombiner" (m.textureCombiner |> AVal.map (fun mode -> int mode))
     |> Sg.uniform "TFBlendFactor" m.TFBlendFactor
     |> Sg.uniform "TFRange" m.TFRange
-    |> Sg.texture "SecondaryTextureTransferFunction" (AVal.constant defaultTransferFunctionTexture)
+    |> Sg.texture "SecondaryTextureTransferFunction" selectTransferFunctionTexture
     |> Sg.fillMode m.fillMode
 
 /// savely converts a string to a float32, independent of the computer language settings
@@ -541,6 +557,9 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
         | true, v -> float32 v
         | _ -> 80.0f
 
+    let activeButtonClass (isActive : bool) =
+        if isActive then "ui mini green button" else "ui mini button"
+
     let toolbar =
         div [ style overlayStyle ] [
             div [] [
@@ -557,7 +576,6 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                 }
             )
             br []
-            div [] [ labeledCheckbox "show secondary texture" m.useSecondary ToggleSecondary ]
             div [] [ labeledCheckbox "LoD visualisation" m.lodVisEnabled ToggleLodVis ]
             div [] [
                 Incremental.div AttributeMap.empty (
@@ -582,6 +600,19 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                         yield button [ clazz "ui mini button"; onClick (fun _ -> PrevPrimaryTexture) ] [ text "<" ]
                         yield button [ clazz "ui mini button"; onClick (fun _ -> NextPrimaryTexture) ] [ text ">" ]
                         yield button [ clazz "ui mini button"; onClick (fun _ -> SetPrimaryTextureLast) ] [ text "albedo (last)" ]
+                    }
+                )
+            ]
+            br []
+            div [] [
+                Incremental.div AttributeMap.empty (
+                    alist {
+                        let! lensActive = m.useSecondary
+
+                        yield button
+                            [ clazz (activeButtonClass lensActive)
+                              onClick (fun _ -> ToggleLens) ]
+                            [ text (if lensActive then "lens active" else "activate lens") ]
                     }
                 )
             ]
@@ -694,15 +725,120 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                 button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
             ]
             div [ style "margin-top: 4px" ] [
-                div [ style "font-size: 12px; margin-bottom: 4px" ] [ text "Transfer Function" ]
+                div [ style "font-size: 12px; margin-bottom: 4px" ] [ text "TextureCombiner" ]
                 Incremental.div AttributeMap.empty (
                     alist {
-                        // Zwei einfache Buttons als Platzhalter für eine Dropdown-UI.
-                        // use textureCombiner instead
-                        yield button [ clazz "ui mini button"; onClick (fun _ -> SetTransferFunctionMode TransferfunctionMode.Ramp) ] [ text "ramp" ]
-                        yield button [ clazz "ui mini button"; onClick (fun _ -> SetTransferFunctionMode TransferfunctionMode.Passthrough) ] [ text "passthrough" ]
-                    }
-                )
+                            let! current = m.textureCombiner
+                            yield button
+                                [ clazz (activeButtonClass (current = TextureCombiner.Primary))
+                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Primary) ]
+                                [ text "primary" ]
+
+                            yield button
+                                [ clazz (activeButtonClass (current = TextureCombiner.Secondary))
+                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Secondary) ]
+                                [ text "secondary" ]
+
+                            yield button
+                                [ clazz (activeButtonClass (current = TextureCombiner.Multiply))
+                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Multiply) ]
+                                [ text "multiply" ]
+
+                            yield button
+                                [ clazz (activeButtonClass (current = TextureCombiner.Blend))
+                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Blend) ]
+                                [ text "blend" ]
+                        }
+                    )
+    
+                div [ style "margin-top: 4px" ] [
+                    div [ style "font-size: 12px; margin-bottom: 4px" ] [
+                        text "TransferFunctionMode"
+                    ];
+
+                    Incremental.div AttributeMap.empty (
+                        alist {
+                            let! current = m.transferFunctionMode
+                            yield button
+                                [ clazz (activeButtonClass (current = TransferFunctionMode.Ramp));
+                                  onClick (fun _ -> SetTransferFunctionMode TransferFunctionMode.Ramp) ]
+                                [ text "ramp" ]
+
+                            yield button
+                                [ clazz (activeButtonClass (current = TransferFunctionMode.Passthrough));
+                                  onClick (fun _ -> SetTransferFunctionMode TransferFunctionMode.Passthrough) ]
+                                [ text "passthrough" ]
+                        }
+                    )
+                ]
+                div [ style "margin-top: 6px" ] [
+                    Incremental.div AttributeMap.empty (
+                        alist {
+                            let! selectedColorMap = m.transferFunctionColorMap
+
+                            let plasmaAttrs =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "transfer-function-colormap"
+                                    attribute "value" "plasma"
+                                    onClick (fun _ -> SetTransferFunctionColorMap "plasma")
+                                ]
+
+                            let plasmaAttrs =
+                                if selectedColorMap = "plasma" then
+                                    attribute "checked" "checked" :: plasmaAttrs
+                                else
+                                    plasmaAttrs
+
+                            let orangesAttrs =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "transfer-function-colormap"
+                                    attribute "value" "oranges"
+                                    onClick (fun _ -> SetTransferFunctionColorMap "oranges")
+                                ]
+
+                            let orangesAttrs =
+                                if selectedColorMap = "oranges" then
+                                    attribute "checked" "checked" :: orangesAttrs
+                                else
+                                    orangesAttrs
+
+                            let spectralAttrs =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "transfer-function-colormap"
+                                    attribute "value" "spectral"
+                                    onClick (fun _ -> SetTransferFunctionColorMap "spectral")
+                                ]
+
+                            let spectralAttrs =
+                                if selectedColorMap = "spectral" then
+                                    attribute "checked" "checked" :: spectralAttrs
+                                else
+                                    spectralAttrs
+
+                            yield div [ style "font-size: 12px; margin-bottom: 2px" ] [
+                                text "transfer function color map"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input plasmaAttrs
+                                text " plasma"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input orangesAttrs
+                                text " oranges"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input spectralAttrs
+                                text " spectral"
+                            ]
+                        }
+                    )
+                ]
             ]
         ]
 

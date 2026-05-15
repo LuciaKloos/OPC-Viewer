@@ -29,15 +29,18 @@ type LoadedScene = {
     PointsOfInterest  : list<PointOfInterestCamera>
 }
 
-type TransferfunctionMode =
-    | Passthrough = 0
-    | Ramp = 1
-
+// The explicit numeric values are important because the shader receives them as int uniforms.
 type TextureCombiner =
-    | Primary = 0
-    | Secondary = 1
-    | Multiply = 2
-    | Blend = 3
+    | Unknown = 0
+    | Primary = 1
+    | Secondary = 2
+    | Multiply = 3
+    | Blend = 4
+
+type TransferFunctionMode =
+    | Unknown = 0
+    | Ramp = 1
+    | Passthrough = 2
 
 [<ModelType>]
 type Model = {
@@ -61,10 +64,11 @@ type Model = {
     mousePos        : V2f
     viewportSize    : V2f
     lensAsRectangle : bool
-    transferFunctionMode : TransferfunctionMode
+    transferFunctionMode : TransferFunctionMode
     textureCombiner : TextureCombiner
     TFBlendFactor : float32
     TFRange : V2f
+    transferFunctionColorMap : string
     /// Banner / error message displayed in the UI.
     statusMessage     : string
 }
