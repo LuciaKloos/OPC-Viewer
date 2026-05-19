@@ -316,21 +316,32 @@ let tryLoadFolder (path : string) : LoadOutcome =
         if List.isEmpty basePaths then
             Failed (sprintf "no patchhierarchy.xml found under %s" path)
         else
-            let hierarchies, bb = OpcLoading.loadHierarchies basePaths
-            let sky = if Vec.length bb.Center > 0.0 then bb.Center.Normalized else V3d.OOI
-            let pointsOfInterest = OpcLoading.loadPointsOfInterest path
-            // any hierarchy will do — they should all share the same texture
-            // layer layout. Fall back to 1 if something is off.
-            let textureCount =
-                hierarchies
-                |> List.tryHead
-                |> Option.map (fun (h, _) ->
-                    OpcLoading.logTextureLayers h
-                    OpcLoading.textureLayerCount h)
-                |> Option.defaultValue 1
+            let hierarchies, bb, textureCount =
+                OpcLoading.loadHierarchiesWithMoreThanOneTexture basePaths
+
+            if List.isEmpty hierarchies then
+                Failed (sprintf "no hierarchies with more than one texture layer found under %s" path)
+            else
+                let loadedPaths =
+                    hierarchies |> List.map snd
+
+                loadedPaths
+                |> List.iter (fun p ->
+                    Log.line "[App] Actually loaded hierarchy: %s" p
+                )
+
+                let sky =
+                    if Vec.length bb.Center > 0.0 then
+                        bb.Center.Normalized
+                    else
+                        V3d.OOI
+
+                let pointsOfInterest =
+                    OpcLoading.loadPointsOfInterest path
+
             Loaded { 
                 RootDirectory = path
-                HierarchyPaths = basePaths
+                    HierarchyPaths = loadedPaths
                 BoundingBox = bb
                 Sky = sky
                 TextureCount = textureCount
@@ -357,6 +368,13 @@ let update (m : Model) (a : Action) =
             let near, far = nearFarForBox scene.BoundingBox
             let primary = max 0 (scene.TextureCount - 1)
             let secondary = wrapTextureIndex scene.TextureCount (primary + 1)
+            let loadedPaths =
+                scene.HierarchyPaths 
+
+            loadedPaths
+            |> List.iter (fun p ->
+                Log.line "[App] Loaded hierarchy: %s" p
+            )
             { m with
                 loaded = Some scene
                 near = near

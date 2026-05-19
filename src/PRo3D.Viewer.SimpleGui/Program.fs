@@ -71,6 +71,7 @@ let private buildSceneFor
             let h =
                 Aardvark.Data.Opc.PatchHierarchy.load
                     serializer.Pickle serializer.UnPickle (OpcPaths.OpcPaths bp)
+                                
             OpcLoading.buildHierarchySg signature runner asyncLoading bp h)
         |> Sg.ofList
 
@@ -179,7 +180,16 @@ let main argv =
             match args.folder with
             | Some path when Directory.Exists path ->
                 match App.tryLoadFolder path with
-                | App.Loaded scene -> Some scene
+                | App.Loaded scene -> 
+                    let serializer = FsPickler.CreateBinarySerializer()
+                   
+                    let hPs = 
+                        scene.HierarchyPaths
+                        |> List.filter (fun bp -> 
+                            let h = Aardvark.Data.Opc.PatchHierarchy.load serializer.Pickle serializer.UnPickle (OpcPaths.OpcPaths bp)
+                            (OpcLoading.textureLayerCount h) > 1)
+
+                    Some ({scene with HierarchyPaths = hPs})
                 | App.Failed msg ->
                     Log.warn "[SimpleGui] preload failed: %s" msg
                     None

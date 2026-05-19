@@ -107,13 +107,112 @@ module OpcLoading =
     let private rootBoundingBox (h : PatchHierarchy) : Box3d =
         (rootPatch h).info.GlobalBoundingBox
 
+
+    let actualTextureLayerCount (h : PatchHierarchy) : int =
+        let textures = (rootPatch h).info.Textures
+        List.length textures / 2
+
     /// Number of distinct texture layers on the root patch. The on-disk
     /// `Textures` list contains a (texture, weights) pair per layer, so the
     /// effective layer count is `length / 2` — this matches the modulo the
     /// geospatial loader uses internally for `LegacyId` lookups.
     let textureLayerCount (h : PatchHierarchy) : int =
+            max 1 (actualTextureLayerCount h)
+
+    let hasMoreThanOneTextureLayer (h : PatchHierarchy) : bool =
+        actualTextureLayerCount h > 1
+
+
+    let logTextureLayersForPath (path : string) (h : PatchHierarchy) =
         let textures = (rootPatch h).info.Textures
-        max 1 (List.length textures / 2)
+
+        Log.line "[OpcLoading] %s has %d Textures entries = %d texture layers:"
+            path
+            (List.length textures)
+            (List.length textures / 2)
+
+        textures
+        |> List.iteri (fun i t ->
+            Log.line "  [%d] %s" i t.fileName
+        )
+
+    let private commonTextureCount (loaded : list<PatchHierarchy * string * int>) : int =
+        let counts =
+            loaded
+            |> List.map (fun (_, _, count) -> count)
+            |> List.distinct
+
+        match counts with
+        | [] ->
+            0
+
+        | [count] ->
+            count
+
+        | _ ->
+            let count = counts |> List.min
+            Log.warn
+                "[OpcLoading] Loaded hierarchies have different texture counts %A; using minimum %d"
+                counts
+                count
+            count
+
+    let loadHierarchiesWithMoreThanOneTexture
+            (basePaths : list<string>)
+            : list<PatchHierarchy * string> * Box3d * int =
+
+        let loaded =
+            basePaths
+            |> List.choose (fun bp ->
+                try
+                    let h =
+                        PatchHierarchy.load
+                            serializer.Pickle
+                            serializer.UnPickle
+                            (OpcPaths.OpcPaths bp)
+
+                    let layerCount = actualTextureLayerCount h
+
+                    if layerCount > 1 then
+                        Log.line
+                            "[OpcLoading] Loaded hierarchy with %d texture layers: %s"
+                            layerCount
+                            bp
+
+                        Some (h, bp, layerCount)
+                    else
+                        Log.line
+                            "[OpcLoading] Skipped hierarchy with only %d texture layer: %s"
+                            layerCount
+                            bp
+
+                        None
+
+                with ex ->
+                    Log.warn
+                        "[OpcLoading] Failed to inspect/load hierarchy %s: %s"
+                        bp
+                        ex.Message
+
+                    None
+            )
+        
+        let hierarchies =
+            loaded
+            |> List.map (fun (h, bp, _) -> h, bp)
+
+        let combined =
+            if List.isEmpty hierarchies then
+                Box3d.Invalid
+            else
+                hierarchies
+                |> Seq.map (fst >> rootBoundingBox)
+                |> Box3d
+
+        let textureCount =
+            commonTextureCount loaded
+
+        hierarchies, combined, textureCount
 
     /// For diagnostics: print the texture-list ordering so callers can map
     /// `LegacyId i` to the actual filename.
@@ -131,8 +230,18 @@ module OpcLoading =
         let hierarchies =
             basePaths
             |> List.map (fun bp ->
-                let h = PatchHierarchy.load serializer.Pickle serializer.UnPickle (OpcPaths.OpcPaths bp)
+                let hierarchyFile = Path.Combine(bp, "patches", "patchhierarchy.xml")
+
+                let h =
+                    PatchHierarchy.load
+                        serializer.Pickle
+                        serializer.UnPickle
+                        (OpcPaths.OpcPaths bp)
+
+                Log.line "[OpcLoading] Successfully loaded hierarchy folder: %s" bp
+
                 h, bp)
+
         let combined =
             hierarchies
             |> Seq.map (fst >> rootBoundingBox)
