@@ -31,16 +31,14 @@ type LoadedScene = {
 
 // The explicit numeric values are important because the shader receives them as int uniforms.
 type TextureCombiner =
-    | Unknown = 0
-    | Primary = 1
-    | Secondary = 2
-    | Multiply = 3
-    | Blend = 4
+    | None = 0
+    | Multiply = 1
+    | Blend = 2
 
 type TransferFunctionMode =
-    | Unknown = 0
-    | Ramp = 1
-    | Passthrough = 2
+   // | Unknown = 0
+    | Ramp = 0
+    | Passthrough = 1
 
 [<ModelType>]
 type Model = {

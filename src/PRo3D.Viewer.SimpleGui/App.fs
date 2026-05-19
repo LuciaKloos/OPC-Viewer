@@ -105,7 +105,7 @@ module private SceneShaders =
 
             let secondaryColorTF = 
                 match uniform.TransferFunctionMode with
-                | 1 ->  // ramp
+                | 0 ->  // ramp
                     let range = uniform.TFRange
 
                     if secondaryColor.X > range.X && secondaryColor.X < range.Y then
@@ -114,29 +114,29 @@ module private SceneShaders =
                     else
                         V4f(1.0f, 0.0f, 0.0f, 1.0f) // debug : red outside of range
                         
-                | 2 ->  // passthrough
+                | 1 ->  // passthrough
                     secondaryColor
                 | _ ->
                     baseColor
 
             // first compute secondary texture without lens
             let combinedColor : V4f =
+                if uniform.UseSecondary then
                 match uniform.TextureCombiner with
-                | 1 ->  // primary
-                    baseColor
-
-                | 2 ->  // secondary
+                        | 0 ->  // none
                     secondaryColorTF
 
-                |  3 ->  // multiply
+                        | 1 ->  // multiply
                     V4f(baseColor.XYZ * secondaryColorTF.XYZ, 2.0f)
 
-                | 4 ->  // blend
+                        | 2 ->  // blend
                     V4f(baseColor.XYZ * (1.0f - uniform.TFBlendFactor) + 
                         secondaryColorTF.XYZ * uniform.TFBlendFactor, 
                         1.0f)
 
                 | _ -> 
+                    baseColor
+                else
                     baseColor
 
             let secondaryMix =
@@ -298,8 +298,8 @@ let initialModel (preload : Option<LoadedScene>) : Model =
         mousePos            = V2f(-1.0f, -1.0f)   // default: außerhalb / ungültig
         viewportSize        = V2f(1280.0f, 800.0f)     // default-Fallback
         lensAsRectangle     = true   
-        transferFunctionMode = TransferFunctionMode.Passthrough
-        textureCombiner = TextureCombiner.Secondary
+        transferFunctionMode = TransferFunctionMode.Passthrough // default: input = output
+        textureCombiner = TextureCombiner.None  // default: do not combine the textures, but show secondary only
         TFBlendFactor = 0.5f
         TFRange = V2f(0.0f, 1.0f)
         transferFunctionColorMap = "plasma"
@@ -528,7 +528,7 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             (buildSceneSg buildScene m)
 
     let overlayStyle =
-        "position: fixed; top: 8px; left: 8px; z-index: 10; \
+        "width: 15rem; position: fixed; top: 8px; left: 8px; z-index: 10; \
          padding: 8px 10px; background: rgba(20,20,20,0.75); color: #eee; \
          font-family: sans-serif; border-radius: 4px"
 
@@ -576,6 +576,14 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                 }
             )
             br []
+            
+            div [ style "margin-top: 4px" ] [
+                button [ clazz "ui mini button"; onClick (fun _ -> RecenterCamera) ] [ text "recenter" ]
+            ]
+            div [ style "margin-top: 4px" ] [
+                button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
+            ]
+            br []
             div [] [ labeledCheckbox "LoD visualisation" m.lodVisEnabled ToggleLodVis ]
             div [] [
                 Incremental.div AttributeMap.empty (
@@ -609,10 +617,26 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                     alist {
                         let! lensActive = m.useSecondary
 
-                        yield button
-                            [ clazz (activeButtonClass lensActive)
-                              onClick (fun _ -> ToggleLens) ]
-                            [ text (if lensActive then "lens active" else "activate lens") ]
+                        let lensAttrs =
+                            [
+                                attribute "type" "radio"
+                                attribute "name" "lens-active"
+                                attribute "value" "lens-active"
+                                onClick (fun _ ->  ToggleLens)
+                            ]
+                            
+                        let lensAttrs =
+                            if lensActive then
+                                attribute "checked" "checked" :: lensAttrs
+                            else
+                                lensAttrs
+
+                        yield label [ style "display: block; font-size: 12px" ] [
+                            input lensAttrs
+                            text " lens active"
+                        ]
+
+
                     }
                 )
             ]
@@ -631,9 +655,11 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                     }
                 )
             ]
-            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.25f) ] [ text "25%" ]
-            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
-            button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]      
+            //div [ style "font-size: 12px; margin-top: 6px" ] [
+            //    text "Secondary Texture Opacity: "
+            //    button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
+            //    button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]     
+            //] 
             div [ style "margin-top: 6px" ] [
                 Incremental.div AttributeMap.empty (
                     alist {
@@ -719,55 +745,121 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                 )
             ]            
             div [ style "margin-top: 4px" ] [
-                button [ clazz "ui mini button"; onClick (fun _ -> RecenterCamera) ] [ text "recenter" ]
-            ]
-            div [ style "margin-top: 4px" ] [
-                button [ clazz "ui mini button"; onClick (fun _ -> MoveCameraToPointOfInterest) ] [ text "move to point of interest" ]
-            ]
-            div [ style "margin-top: 4px" ] [
-                div [ style "font-size: 12px; margin-bottom: 4px" ] [ text "TextureCombiner" ]
                 Incremental.div AttributeMap.empty (
                     alist {
                             let! current = m.textureCombiner
-                            yield button
-                                [ clazz (activeButtonClass (current = TextureCombiner.Primary))
-                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Primary) ]
-                                [ text "primary" ]
 
-                            yield button
-                                [ clazz (activeButtonClass (current = TextureCombiner.Secondary))
-                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Secondary) ]
-                                [ text "secondary" ]
+                            let noneAttr =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "none"
+                                    attribute "value" "none"
+                                    onClick(fun _ -> SetTextureCombiner TextureCombiner.None)
+                                ]
 
-                            yield button
-                                [ clazz (activeButtonClass (current = TextureCombiner.Multiply))
-                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Multiply) ]
-                                [ text "multiply" ]
+                            let noneAttr =
+                                if current = TextureCombiner.None then
+                                    attribute "checked" "checked" :: noneAttr
+                                else    
+                                    noneAttr
 
-                            yield button
-                                [ clazz (activeButtonClass (current = TextureCombiner.Blend))
-                                  onClick (fun _ -> SetTextureCombiner TextureCombiner.Blend) ]
-                                [ text "blend" ]
+                            let multiplyAttr =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "multiply"
+                                    attribute "value" "multiply"
+                                    onClick(fun _ -> SetTextureCombiner TextureCombiner.Multiply)
+                                ]
+
+                            let multiplyAttr =
+                                if current = TextureCombiner.Multiply then
+                                    attribute "checked" "checked" :: multiplyAttr
+                                else    
+                                    multiplyAttr
+
+                            let blendAttr =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "blend"
+                                    attribute "value" "blend"
+                                    onClick(fun _ -> SetTextureCombiner TextureCombiner.Blend)
+                                ]
+
+                            let blendAttr =
+                                if current = TextureCombiner.Blend then
+                                    attribute "checked" "checked" :: blendAttr
+                                else    
+                                    blendAttr
+
+                            yield div [ style "font-size: 12px; margin-bottom: 2px" ] [
+                                text "texture combiner: "
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input noneAttr
+                                text " none"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input multiplyAttr
+                                text " multiply"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input blendAttr
+                                text " blend"
+                            ]
+
                         }
                     )
     
                 div [ style "margin-top: 4px" ] [
-                    div [ style "font-size: 12px; margin-bottom: 4px" ] [
-                        text "TransferFunctionMode"
-                    ];
-
                     Incremental.div AttributeMap.empty (
                         alist {
                             let! current = m.transferFunctionMode
-                            yield button
-                                [ clazz (activeButtonClass (current = TransferFunctionMode.Ramp));
-                                  onClick (fun _ -> SetTransferFunctionMode TransferFunctionMode.Ramp) ]
-                                [ text "ramp" ]
 
-                            yield button
-                                [ clazz (activeButtonClass (current = TransferFunctionMode.Passthrough));
-                                  onClick (fun _ -> SetTransferFunctionMode TransferFunctionMode.Passthrough) ]
-                                [ text "passthrough" ]
+                            let passthroughAttr =
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "transfer-function"
+                                    attribute "value" "passthrough"
+                                    onClick(fun _ -> SetTransferFunctionMode TransferFunctionMode.Passthrough)
+                                ]
+
+                            let passthroughAttr = 
+                                if current = TransferFunctionMode.Passthrough then
+                                    attribute "checked" "checked" :: passthroughAttr
+                                else 
+                                    passthroughAttr
+
+                            let rampAttrs = 
+                                [
+                                    attribute "type" "radio"
+                                    attribute "name" "transfer-function"
+                                    attribute "value" "ramp"
+                                    onClick(fun _ -> SetTransferFunctionMode TransferFunctionMode.Ramp)
+                                ]
+
+                            let rampAttrs =
+                                if current = TransferFunctionMode.Ramp then
+                                    attribute "checked" "checked" :: rampAttrs
+                                else 
+                                    rampAttrs
+
+                            yield div [ style "font-size: 12px; margin-bottom: 2px" ] [
+                                text "transfer function mode"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input passthroughAttr
+                                text " passthrough"
+                            ]
+
+                            yield label [ style "display: block; font-size: 12px" ] [
+                                input rampAttrs
+                                text " ramp"
+                            ]
+
                         }
                     )
                 ]
