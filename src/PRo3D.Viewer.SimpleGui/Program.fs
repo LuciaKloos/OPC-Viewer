@@ -95,8 +95,8 @@ let private runScreenshot
     let runner = runtime.CreateLoadRunner 1
     let buildScene = buildSceneFor signature runner false
 
-    let near, far = App.nearFarForBox scene.BoundingBox
-    let view = App.cameraForBox scene.BoundingBox
+    let near, far = Camera.nearFarForBox scene.BoundingBox
+    let view = Camera.cameraForBox scene.BoundingBox
     let aspect = float width / float height
     let frustum = Frustum.perspective 60.0 near far aspect
 

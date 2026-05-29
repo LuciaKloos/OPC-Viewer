@@ -6,16 +6,26 @@
     <RootNamespace>PRo3D.Viewer.SimpleGui</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="resources\wavelengths.json" />
     <EmbeddedResource Include="resources\plasma.png" />
     <EmbeddedResource Include="resources\oranges.png" />
     <EmbeddedResource Include="resources\spectral.png" />
+
+    <Content Include="resources\plasma.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="resources\oranges.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="resources\spectral.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <None Include="paket.references" />
     <None Include="RunAdaptify.fsx" />
     <Compile Include="Model.fs" />
+    <Compile Include="Model.g.fs" />    
     <Compile Include="Model.g.fs" />
-	<Compile Include="Multitexturing.fs" />
+    <Compile Include="Wavelength.fs" />
+    <Compile Include="Camera.fs" />
+    <Compile Include="SceneShaders.fs" />
+    <Compile Include="Styles.fs" />
+    <Compile Include="Multitexturing.fs" />
     <Compile Include="OpcLoading.fs" />
     <Compile Include="App.fs" />
     <Compile Include="Program.fs" />

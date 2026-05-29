@@ -8,161 +8,6 @@ open FSharp.Data.Adaptive
 
 open PRo3D.Viewer.SimpleGui
 
-module private SceneShaders =
-    open Aardvark.Rendering.Effects
-    open FShade
-
-    type UniformScope with
-        member x.UseSecondary : bool = uniform?UseSecondary
-        member x.SecondaryOpacity : float32 = uniform?SecondaryOpacity
-        member x.MousePos : V2f = uniform?MousePos
-        member x.ViewportSize : V2f = uniform?ViewportSize
-        member x.LensRadius : float32 = uniform?LensRadius
-        member x.LensAsRectangle : bool = uniform?LensAsRectangle
-        member x.TextureCombiner : int = uniform?TextureCombiner
-        member x.TransferFunctionMode : int = uniform?TransferFunctionMode
-        member x.TFRange : V2f = uniform?TFRange
-        member x.TFBlendFactor : float32 = uniform?TFBlendFactor
-
-    let private secondarySampler =
-        sampler2d {
-            texture uniform?SecondaryTexture
-            filter Filter.MinMagMipLinear
-            addressU WrapMode.Wrap
-            addressV WrapMode.Wrap
-        }
-
-    let private transferFunctionSampler =
-        sampler2d {
-            texture uniform?SecondaryTextureTransferFunction
-            filter Filter.MinMagPoint
-            addressU WrapMode.Clamp
-            addressV WrapMode.Clamp
-        }
-
-
-    let stableTrafo (v : Vertex) =
-        vertex {
-            let vp = uniform.ModelViewTrafo * v.pos
-            let wp = uniform.ModelTrafo * v.pos
-            return {
-                pos = uniform.ProjTrafo * vp
-                wp = wp
-                n = uniform.NormalMatrix * v.n
-                b = uniform.NormalMatrix * v.b
-                t = uniform.NormalMatrix * v.t
-                c = v.c
-                tc = v.tc
-            }
-        }
-
-    let secondaryLens (v : Vertex) =
-        fragment {
-            // check if pixel is inside lens area:
-            // screen-space fragment position in pixels
-            let clip = v.pos
-            let ndc = clip.XY / clip.W
-
-            let fragPx = 
-                V2f (
-                    (ndc.X * 0.5f + 0.5f) * uniform.ViewportSize.X,
-                    (ndc.Y * 0.5f + 0.5f) * uniform.ViewportSize.Y
-                )
-
-            // mouse position in same coordinate system as fragPos
-            let mousePx =
-                V2f(
-                    uniform.MousePos.X,
-                    uniform.ViewportSize.Y - uniform.MousePos.Y
-                )
-
-            let dx = mousePx.X - fragPx.X
-            let dy = mousePx.Y - fragPx.Y
-
-            let minViewportSize =
-                if uniform.ViewportSize.X < uniform.ViewportSize.Y then
-                    uniform.ViewportSize.X
-                else
-                    uniform.ViewportSize.Y
-
-            let radiusPx =
-                uniform.LensRadius * minViewportSize
-            
-            let halfWidthPx = radiusPx * 0.5f
-            let halfHeightPx = radiusPx * 0.5f
-    
-            let insideLens =
-                if uniform.LensAsRectangle then
-                    abs(dx) < halfWidthPx && abs(dy) < halfHeightPx   
-                else
-                    dx * dx + dy * dy < radiusPx * radiusPx
-                
-            let range = uniform.TFRange
-            
-            let baseColor = v.c
-            let secondaryColor = secondarySampler.Sample(v.tc)
-           
-
-            let secondaryColorTF = 
-                match uniform.TransferFunctionMode with
-                | 0 ->  // ramp
-                    let range = uniform.TFRange
-
-                    if secondaryColor.X > range.X && secondaryColor.X < range.Y then
-                        let my = (secondaryColor.X - range.X) / (range.Y - range.X)
-                        transferFunctionSampler.Sample(V2f(my, 0.5f))
-                    else
-                        V4f(1.0f, 0.0f, 0.0f, 1.0f) // debug : red outside of range
-                        
-                | 1 ->  // passthrough
-                    secondaryColor
-                | _ ->
-                    baseColor
-
-            // first compute secondary texture without lens
-            let combinedColor : V4f =
-                if uniform.UseSecondary then
-                    match uniform.TextureCombiner with
-                    | 0 ->  // none
-                        secondaryColorTF
-
-                    | 1 ->  // multiply
-                        V4f(baseColor.XYZ * secondaryColorTF.XYZ, 2.0f)
-
-                    | 2 ->  // blend
-                        V4f(baseColor.XYZ * (1.0f - uniform.TFBlendFactor) + 
-                            secondaryColorTF.XYZ * uniform.TFBlendFactor, 
-                            1.0f)
-
-                    | _ -> 
-                            baseColor
-                else
-                    baseColor
-
-            let secondaryMix =
-                if uniform.UseSecondary && insideLens then  
-                    uniform.SecondaryOpacity
-                else
-                    0.0f
-
-            let rgb =
-                Fun.Lerp(secondaryMix, baseColor.XYZ, combinedColor.XYZ)
-
-            let alpha = 
-                if uniform.UseSecondary && insideLens then
-                    1.0f
-                else
-                    baseColor.W
-                       
-            let debugRed = 
-                if insideLens then
-                    combinedColor.XYZ
-                else
-                    V3f(1.0f, 1.0f, 1.0f)
-
-            return V4f(rgb, alpha)
-        }
-
 type Action =
     | SetFolder       of list<string>
     | CameraAction    of FreeFlyController.Message
@@ -190,79 +35,6 @@ type LoadOutcome =
     | Loaded of LoadedScene
     | Failed of string
 
-let cameraForBox (bb : Box3d) : CameraView =
-    if bb.IsValid && not bb.IsEmpty && bb.Size.NormMax > 0.0 then
-        let sky = if Vec.length bb.Center > 0.0 then bb.Center.Normalized else V3d.OOI
-        CameraView.lookAt bb.Max bb.Center sky
-    else
-        CameraView.lookAt (V3d(3.0, 3.0, 3.0)) V3d.Zero V3d.OOI
-
-// this can be used to find a location for creating a poiint of interest file
-let private logCamera (cameraState : CameraControllerState) =
-    let view = cameraState.view
-    let p = view.Location
-    let f = view.Forward
-    let u = view.Up
-
-    Log.line
-        "[camera] pos=(%.6f, %.6f, %.6f), forward=(%.6f, %.6f, %.6f), up=(%.6f, %.6f, %.6f)"
-        p.X p.Y p.Z
-        f.X f.Y f.Z
-        u.X u.Y u.Z
-
-let cameraForPointOfInterest (poi : PointOfInterestCamera) : CameraView =
-    let forward =
-        if Vec.length poi.Forward > 1e-8 then
-            poi.Forward.Normalized
-        else
-            V3d.OOI
-
-    let up =
-        if Vec.length poi.Up > 1e-8 then
-            poi.Up.Normalized
-        else
-            V3d.OOI
-
-    let target = poi.Position + forward
-
-    CameraView.lookAt poi.Position target up
-
-let nearFarForBox (bb : Box3d) : float * float =
-    if bb.IsValid && not bb.IsEmpty && bb.Size.NormMax > 0.0 then
-        let s = bb.Size.NormMax
-        max 0.01 (s * 0.001), s * 100.0
-    else
-        0.1, 1000.0
-
-let private freeFlyConfigForBox (bb : Box3d) : FreeFlyConfig =
-    if bb.IsValid && not bb.IsEmpty && bb.Size.NormMax > 0.0 then
-        let sceneSize = bb.Size.NormMax
-
-        // Camera speed in world units per second.
-        // Tune this multiplier if it feels too slow/fast.
-        let unitsPerSecond =
-            max 0.01 (sceneSize * 0.25)
-
-        let heuristic =
-            FreeFlyHeuristics.DefaultSpeedHeuristic(
-                0.0,
-                FreeFlyConfig.initial
-            )
-
-        let adjusted : FreeFlyHeuristics.SpeedHeuristic =
-            heuristic.AdjustToUnitsPerSecond unitsPerSecond
-
-        adjusted.Config
-    else
-        FreeFlyConfig.initial
-
-
-let private cameraForBoxWithFreeFlyConfig (bb : Box3d) : CameraControllerState =
-    { FreeFlyController.initial with
-        view = cameraForBox bb
-        freeFlyConfig = freeFlyConfigForBox bb
-    }
-
 /// Effects applied to the OPC scene. Exposed so the offscreen-screenshot
 /// code path can reuse the same shader chain as the interactive view.
 let sceneEffects : list<FShade.Effect> = [
@@ -275,7 +47,7 @@ let sceneEffects : list<FShade.Effect> = [
 /// so the GUI starts up already showing a scene.
 let initialModel (preload : Option<LoadedScene>) : Model =
     let bb = preload |> Option.map (fun s -> s.BoundingBox) |> Option.defaultValue Box3d.Invalid
-    let near, far = nearFarForBox bb
+    let near, far = Camera.nearFarForBox bb
     let textureCount = preload |> Option.map (fun s -> s.TextureCount) |> Option.defaultValue 1
     let initialPrimary = preload |> Option.map (fun s -> max 0 (s.TextureCount - 1)) |> Option.defaultValue 0
     let initialSecondary =
@@ -285,7 +57,7 @@ let initialModel (preload : Option<LoadedScene>) : Model =
             initialPrimary
     {
         loaded              = preload
-        cameraState         = cameraForBoxWithFreeFlyConfig bb
+        cameraState         = Camera.cameraForBoxWithFreeFlyConfig bb
         near                = near
         far                 = far
         primaryTextureIndex = initialPrimary
@@ -369,7 +141,7 @@ let update (m : Model) (a : Action) =
     | SetFolder (path :: _) ->
         match tryLoadFolder path with
         | Loaded scene ->
-            let near, far = nearFarForBox scene.BoundingBox
+            let near, far = Camera.nearFarForBox scene.BoundingBox
             let primary = max 0 (scene.TextureCount - 1)
             let secondary = wrapTextureIndex scene.TextureCount (primary + 1)
             let loadedPaths =
@@ -385,7 +157,7 @@ let update (m : Model) (a : Action) =
                 far = far
                 primaryTextureIndex = primary
                 secondaryTextureIndex = secondary
-                cameraState = cameraForBoxWithFreeFlyConfig scene.BoundingBox 
+                cameraState = Camera.cameraForBoxWithFreeFlyConfig scene.BoundingBox 
                 statusMessage = sprintf "Loaded %d hierarchies from %s (%d texture layers)" (List.length scene.HierarchyPaths) path scene.TextureCount }
         | Failed msg ->
             { m with statusMessage = msg }
@@ -398,7 +170,7 @@ let update (m : Model) (a : Action) =
         { m with fillMode = next }
     | RecenterCamera ->
         match m.loaded with
-        | Some s -> { m with cameraState = cameraForBoxWithFreeFlyConfig s.BoundingBox }
+        | Some s -> { m with cameraState = Camera.cameraForBoxWithFreeFlyConfig s.BoundingBox }
         | None -> m
     | NextPrimaryTexture ->
         match m.loaded with
@@ -420,7 +192,7 @@ let update (m : Model) (a : Action) =
                 { m with 
                     cameraState = 
                         { m.cameraState with 
-                            view = cameraForPointOfInterest poi 
+                            view = Camera.cameraForPointOfInterest poi 
                         } 
                     statusMessage = sprintf "Moved camera to point of interest: %s" poi.Name
                  }
@@ -460,10 +232,10 @@ let update (m : Model) (a : Action) =
             { m with TFBlendFactor = clamp 0.0f 1.0f factor }
     | SetTFRange range ->
             let safeRange =
-                if range.Y > range.X then
+                if range.X >= 0.0f && range.Y <= 1.0f && range.X <= range.Y then
                     range
                 else
-                    m.TFRange
+                    V2f(0.0f, 1.0f)
             { m with TFRange = safeRange }
     | SetTransferFunctionColorMap name ->
             { m with transferFunctionColorMap = name }
@@ -553,7 +325,7 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
         FreeFlyController.controlledControl
             m.cameraState CameraAction frustum
             (AttributeMap.ofList [
-                style "position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0"
+                style Styles.renderArea
                 attribute "data-samples" "1"
                 onEvent "onmousemove"
                        [
@@ -571,21 +343,6 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ])
             (buildSceneSg buildScene m)
 
-    let overlayToolbarStyle =
-        "width: 15rem; position: fixed; top: 8px; left: 8px; z-index: 10; \
-         padding: 8px 10px; background: rgba(20,20,20,0.75); color: #eee; \
-         font-family: sans-serif; border-radius: 4px"
-
-    let overlayLegendStyle =
-        "position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 9; \
-         width: min(55vw, 460px); pointer-events: none; font-family: sans-serif; \
-         background: rgba(20,20,20,0.75); color: #eee; \
-         text-shadow: 0 1px 2px rgba(0,0,0,0.8); border-radius: 4px; \
-         padding: 6px 8px; box-sizing: border-box"
-
-    let overlayColorMapLabelSyle =
-        "font-family: sans-serif; width: 100%; display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; "
-
     let labeledCheckbox (label : string) (current : aval<bool>) (msg : Action) =
         Incremental.div AttributeMap.empty (
             alist {
@@ -597,25 +354,8 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             }
         )
 
-    let parseFloat32Invariant (s : string) =
-        let clean =
-            s.Trim()
-             .Trim('"')
-             .Trim('\'')
-
-        match System.Double.TryParse(
-            clean,
-            System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture
-        ) with
-        | true, v -> float32 v
-        | _ -> 80.0f
-
-    let activeButtonClass (isActive : bool) =
-        if isActive then "ui mini green button" else "ui mini button"
-
     let toolbar =
-        div [ style overlayToolbarStyle ] [
+        div [ style Styles.overlayToolbar ] [
             div [] [
                 openDialogButton
                     { OpenDialogConfig.folder with title = "Choose OPC root directory" }
@@ -709,11 +449,6 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                     }
                 )
             ]
-            //div [ style "font-size: 12px; margin-top: 6px" ] [
-            //    text "Secondary Texture Opacity: "
-            //    button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 0.50f) ] [ text "50%" ]
-            //    button [ clazz "ui mini button"; onClick (fun _ -> SetSecondaryOpacity 1.00f) ] [ text "100%" ]     
-            //] 
             div [ style "margin-top: 6px" ] [
                 Incremental.div AttributeMap.empty (
                     alist {
@@ -790,9 +525,9 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                                 onEvent "oninput"
                                     [ "event.target.value" ]
                                     (fun values ->
-                                        values.[0]
-                                        |> parseFloat32Invariant
-                                        |> SetLensRadius)
+                                        match values.[0] |> Wavelength.tryParseFloat32Invariant with
+                                        | Some radius -> SetLensRadius radius
+                                        | None -> SetLensRadius 1.0f)  // fallback: max radius when parsing fails
                             ]
                         ]
                     }
@@ -985,12 +720,152 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                         }
                     )
                 ]
+
+                div [ style Styles.wavelengthRangeSection ] [
+                    Incremental.div AttributeMap.empty (
+                        alist {
+                            let! loaded = m.loaded
+                            let! useSecondary = m.useSecondary
+                            let! primaryIndex = m.primaryTextureIndex
+                            let! secondaryIndex = m.secondaryTextureIndex
+                            let! tfRange = m.TFRange
+
+                            let activeTextureIndex =
+                                if useSecondary then
+                                    secondaryIndex
+                                else
+                                    primaryIndex
+
+                            match loaded with
+                            | Some scene ->
+                                match wavelengthRangeForTextureIndex scene.WavelengthConfig activeTextureIndex with
+                                | Some (minNm, maxNm, unit) ->
+
+                                    let left01 =
+                                        clamp 0.0f 1.0f tfRange.X
+
+                                    let right01 =
+                                        clamp 0.0f 1.0f tfRange.Y
+
+                                    let selectedMinNm =
+                                        Wavelength.value01ToWavelength minNm maxNm left01
+
+                                    let selectedMaxNm =
+                                        Wavelength.value01ToWavelength minNm maxNm right01
+
+                                    let minValue =
+                                        Wavelength.formatIntInvariant minNm
+
+                                    let maxValue =
+                                        Wavelength.formatIntInvariant maxNm
+
+                                    let selectedMinValue =
+                                        Wavelength.formatFloat32Invariant selectedMinNm
+
+                                    let selectedMaxValue =
+                                        Wavelength.formatFloat32Invariant selectedMaxNm
+
+                                    yield div [] [
+                                        div [ style Styles.wavelengthRangeTitle ] [
+                                            text (
+                                                sprintf
+                                                    "wavelength range:"
+                                            )
+                                        ]
+
+                                        div [ style Styles.wavelengthRangeLimitLabel ] [
+                                            span [] [ text (sprintf "min %d %s" minNm unit) ]
+                                            span [] [ text (sprintf "max %d %s" maxNm unit) ]
+                                        ]
+
+                                        div [ 
+                                            style Styles.wavelengthRangeInputRow
+                                            attribute "data-wavelength-range-row" "true"
+                                        ] [
+                                            input [
+                                                attribute "type" "number"
+                                                attribute "min" minValue
+                                                attribute "max" maxValue
+                                                attribute "step" "1"
+                                                attribute "placeholder" "min"
+                                                attribute "value" selectedMinValue
+                                                style Styles.wavelengthRangeInput
+
+                                                onEvent "onchange"
+                                                    [ Wavelength.wavelengthMinInputValueScript minNm maxNm selectedMaxNm ]
+                                                    (fun values ->
+                                                        let value = values.[0]
+
+                                                        if value = Wavelength.fullWavelengthRangeToken then
+                                                            SetTFRange Wavelength.fullWavelengthRange01
+                                                        else
+                                                            match value |> Wavelength.tryParseFloat32Invariant with
+                                                            | Some newMinNm ->
+                                                                let newRange =
+                                                                    Wavelength.wavelengthSelectionToRangeOrFull minNm maxNm newMinNm selectedMaxNm
+
+                                                                SetTFRange newRange
+
+                                                            | None ->
+                                                                SetTFRange Wavelength.fullWavelengthRange01)
+                                            ]
+
+                                            div [ 
+                                                style Styles.wavelengthRangeInputRow
+                                            ] [
+                                                input [
+                                                    attribute "type" "number"
+                                                    attribute "min" minValue
+                                                    attribute "max" maxValue
+                                                    attribute "step" "1"
+                                                    attribute "placeholder" "max"
+                                                    attribute "value" selectedMaxValue
+                                                    style Styles.wavelengthRangeInput
+
+                                                    onEvent "onchange"
+                                                        [ Wavelength.wavelengthMaxInputValueScript minNm maxNm selectedMinNm ]
+                                                        (fun values ->
+                                                            let value = values.[0]
+
+                                                            if value = Wavelength.fullWavelengthRangeToken then
+                                                                SetTFRange Wavelength.fullWavelengthRange01
+                                                            else
+                                                                match value |> Wavelength.tryParseFloat32Invariant with
+                                                                | Some newMaxNm ->
+                                                                    let newRange =
+                                                                        Wavelength.wavelengthSelectionToRangeOrFull minNm maxNm selectedMinNm newMaxNm
+
+                                                                    SetTFRange newRange
+
+                                                                | None ->
+                                                                    SetTFRange Wavelength.fullWavelengthRange01)
+                                                ]
+
+                                                span [ style Styles.wavelengthRangeUnit ] [
+                                                    text (sprintf " %s" unit)
+                                                ]
+                                            ]
+                                        ]
+                                    ]
+
+                                | None ->
+                                    yield div [ style Styles.wavelengthRangeWarning ] [
+                                        text (sprintf "no wavelength range for texture %d" activeTextureIndex)
+                                    ]
+
+                            | None ->
+                                yield div [ style Styles.wavelengthRangeMuted ] [
+                                    text "load a scene to select wavelength range"
+                                ]
+                        }
+                    )
+                ]
             ]
         ]
 
 
     let colorMapOverlay =
-        div [ style overlayLegendStyle ] [
+        div [ style Styles.overlayLegend ] [
             Incremental.div (
                 AttributeMap.ofList [
                 ]
@@ -1001,6 +876,7 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                     let! useSecondary = m.useSecondary
                     let! primaryIndex = m.primaryTextureIndex
                     let! secondaryIndex = m.secondaryTextureIndex
+                    let! tfRange = m.TFRange
 
                     let activeTextureIndex =
                         if useSecondary then
@@ -1008,51 +884,86 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
                         else
                             primaryIndex
 
-                    let imagePath =
-                        transferFunctionColorMapImagePath selectedColorMap
 
-                    let rangeText =
-                        match loaded with
-                        | Some scene ->
-                            match wavelengthRangeForTextureIndex scene.WavelengthConfig activeTextureIndex with
-                            | Some (minNm, maxNm, unit) ->
-                                Some (minNm, maxNm, unit)
-                            | None ->
-                                None
-                        | None ->
-                            None
-
-                    yield div [] [
-                        yield div [style " font-size: 12px; margin-bottom: 4px;" ] [
-                            text (sprintf "colormap: %s" selectedColorMap)
-                        ]
-
-                        yield img [
-                            attribute "src" imagePath
-                            style "width: 100%; height: 18px; display: block; image-rendering: auto;"
-                        ]
-                       
-                        match rangeText with
+                    match loaded with
+                    | Some scene ->
+                        match wavelengthRangeForTextureIndex scene.WavelengthConfig activeTextureIndex with
                         | Some (minNm, maxNm, unit) ->
-                            yield div [
-                                style overlayColorMapLabelSyle
-                            ] [
-                                span [] [
-                                    text (sprintf "smallest %d %s" minNm unit)
+                            let left01 =
+                                clamp 0.0f 1.0f tfRange.X
+
+                            let right01 =
+                                clamp 0.0f 1.0f tfRange.Y
+
+                            let imagePath =
+                                transferFunctionColorMapImagePath selectedColorMap
+
+                            let rangeText =
+                                match loaded with
+                                | Some scene ->
+                                    match wavelengthRangeForTextureIndex scene.WavelengthConfig activeTextureIndex with
+                                    | Some (minNm, maxNm, unit) ->
+                                        Some (minNm, maxNm, unit)
+                                    | None ->
+                                        None
+                                | None ->
+                                    None
+
+                            yield div [] [
+                                yield div [style " font-size: 12px; margin-bottom: 4px;" ] [
+                                    text (sprintf "colormap: %s" selectedColorMap)
                                 ]
 
-                                span [] [
-                                    text (sprintf "largest %d %s" maxNm unit)
+                                yield img [
+                                    attribute "src" imagePath
+                                    style "width: 100%; height: 18px; display: block; image-rendering: auto;"
                                 ]
+                       
+                                match rangeText with
+                                | Some (minNm, maxNm, unit) ->
+                                    yield div [
+                                        style Styles.overlayColorMapLabel
+                                    ] [
+                                        span [] [
+                                            text (sprintf "min wavelength %d %s" minNm unit)
+                                        ]
+
+                                        span [] [
+                                            text (sprintf "max wavelength %d %s" maxNm unit)
+                                        ]
+                                    ]
+
+                                | None ->
+                                    yield div [
+                                        style Styles.overlayColorMapLabel
+                                    ] [
+                                        text (sprintf "no wavelength range for texture %d" activeTextureIndex)
+                                    ]
+
+                                let selectedMinPercentage = Wavelength.formatFloat32Invariant left01
+                                let selectedMaxPercentage = Wavelength.formatFloat32Invariant right01
+
+                                yield div [
+                                        style Styles.overlayColorMapLabel
+                                    ] [
+                                        span [] [
+                                            text (sprintf "selected min %s" selectedMinPercentage)
+                                        ]
+
+                                        span [] [
+                                            text (sprintf "selected max %s" selectedMaxPercentage)
+                                        ]
+                                    ]
                             ]
 
                         | None ->
-                            yield div [
-                                style overlayColorMapLabelSyle
-                            ] [
+                            yield div [ style Styles.wavelengthRangeWarning ] [
                                 text (sprintf "no wavelength range for texture %d" activeTextureIndex)
                             ]
-                    ]
+                    | None ->
+                        yield div [ style Styles.wavelengthRangeMuted ] [
+                            text "load a scene to select wavelength range"
+                        ]
 
                 }
             )
