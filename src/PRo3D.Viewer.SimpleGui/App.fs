@@ -122,20 +122,20 @@ module private SceneShaders =
             // first compute secondary texture without lens
             let combinedColor : V4f =
                 if uniform.UseSecondary then
-                match uniform.TextureCombiner with
-                        | 0 ->  // none
-                    secondaryColorTF
+                    match uniform.TextureCombiner with
+                    | 0 ->  // none
+                        secondaryColorTF
 
-                        | 1 ->  // multiply
-                    V4f(baseColor.XYZ * secondaryColorTF.XYZ, 2.0f)
+                    | 1 ->  // multiply
+                        V4f(baseColor.XYZ * secondaryColorTF.XYZ, 2.0f)
 
-                        | 2 ->  // blend
-                    V4f(baseColor.XYZ * (1.0f - uniform.TFBlendFactor) + 
-                        secondaryColorTF.XYZ * uniform.TFBlendFactor, 
-                        1.0f)
+                    | 2 ->  // blend
+                        V4f(baseColor.XYZ * (1.0f - uniform.TFBlendFactor) + 
+                            secondaryColorTF.XYZ * uniform.TFBlendFactor, 
+                            1.0f)
 
-                | _ -> 
-                    baseColor
+                    | _ -> 
+                            baseColor
                 else
                     baseColor
 
@@ -339,14 +339,18 @@ let tryLoadFolder (path : string) : LoadOutcome =
                 let pointsOfInterest =
                     OpcLoading.loadPointsOfInterest path
 
-            Loaded { 
-                RootDirectory = path
+                let wavelengthConfig =
+                    OpcLoading.loadWavelengthConfig path
+
+                Loaded { 
+                    RootDirectory = path
                     HierarchyPaths = loadedPaths
-                BoundingBox = bb
-                Sky = sky
-                TextureCount = textureCount
-                PointsOfInterest = pointsOfInterest
-            }
+                    BoundingBox = bb
+                    Sky = sky
+                    TextureCount = textureCount
+                    PointsOfInterest = pointsOfInterest
+                    WavelengthConfig = wavelengthConfig
+                }
     with ex ->
         Failed (sprintf "load failed: %s" ex.Message)
 
@@ -473,6 +477,28 @@ let private transferFunctionTexture (name : string) =
         |> Map.find "plasma"
         |> fun tex -> tex.Value
 
+let private transferFunctionColorMapImagePath (name : string) =
+    sprintf "resources/%s.png" name
+
+// needs a rework when working with real data wavelengths
+let private wavelengthRangeForTextureIndex
+        (config : WavelengthConfig)
+        (textureIndex : int)
+        : Option<int * int * string> =
+
+    let values =
+        config.Wavelengths |> List.toArray
+
+    // Texture index 0 -> wavelengths[0], wavelengths[1]
+    // Texture index 1 -> wavelengths[2], wavelengths[3]
+    let startIndex =
+        textureIndex * 2
+
+    if startIndex + 1 < values.Length then
+        Some (values.[startIndex], values.[startIndex + 1], config.Unit)
+    else
+        None
+
 /// Build the scene graph, wired up to all the toggle uniforms.
 /// `buildScene` constructs the per-hierarchy SG using the captured runtime/runner.
 let private buildSceneSg (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveModel) : ISg<Action> =
@@ -545,10 +571,20 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ])
             (buildSceneSg buildScene m)
 
-    let overlayStyle =
+    let overlayToolbarStyle =
         "width: 15rem; position: fixed; top: 8px; left: 8px; z-index: 10; \
          padding: 8px 10px; background: rgba(20,20,20,0.75); color: #eee; \
          font-family: sans-serif; border-radius: 4px"
+
+    let overlayLegendStyle =
+        "position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 9; \
+         width: min(55vw, 460px); pointer-events: none; font-family: sans-serif; \
+         background: rgba(20,20,20,0.75); color: #eee; \
+         text-shadow: 0 1px 2px rgba(0,0,0,0.8); border-radius: 4px; \
+         padding: 6px 8px; box-sizing: border-box"
+
+    let overlayColorMapLabelSyle =
+        "font-family: sans-serif; width: 100%; display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; "
 
     let labeledCheckbox (label : string) (current : aval<bool>) (msg : Action) =
         Incremental.div AttributeMap.empty (
@@ -579,7 +615,7 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
         if isActive then "ui mini green button" else "ui mini button"
 
     let toolbar =
-        div [ style overlayStyle ] [
+        div [ style overlayToolbarStyle ] [
             div [] [
                 openDialogButton
                     { OpenDialogConfig.folder with title = "Choose OPC root directory" }
@@ -952,9 +988,80 @@ let view (buildScene : LoadedScene -> Aardvark.SceneGraph.ISg) (m : AdaptiveMode
             ]
         ]
 
+
+    let colorMapOverlay =
+        div [ style overlayLegendStyle ] [
+            Incremental.div (
+                AttributeMap.ofList [
+                ]
+            )  (
+                alist {
+                    let! loaded = m.loaded
+                    let! selectedColorMap = m.transferFunctionColorMap
+                    let! useSecondary = m.useSecondary
+                    let! primaryIndex = m.primaryTextureIndex
+                    let! secondaryIndex = m.secondaryTextureIndex
+
+                    let activeTextureIndex =
+                        if useSecondary then
+                            secondaryIndex
+                        else
+                            primaryIndex
+
+                    let imagePath =
+                        transferFunctionColorMapImagePath selectedColorMap
+
+                    let rangeText =
+                        match loaded with
+                        | Some scene ->
+                            match wavelengthRangeForTextureIndex scene.WavelengthConfig activeTextureIndex with
+                            | Some (minNm, maxNm, unit) ->
+                                Some (minNm, maxNm, unit)
+                            | None ->
+                                None
+                        | None ->
+                            None
+
+                    yield div [] [
+                        yield div [style " font-size: 12px; margin-bottom: 4px;" ] [
+                            text (sprintf "colormap: %s" selectedColorMap)
+                        ]
+
+                        yield img [
+                            attribute "src" imagePath
+                            style "width: 100%; height: 18px; display: block; image-rendering: auto;"
+                        ]
+                       
+                        match rangeText with
+                        | Some (minNm, maxNm, unit) ->
+                            yield div [
+                                style overlayColorMapLabelSyle
+                            ] [
+                                span [] [
+                                    text (sprintf "smallest %d %s" minNm unit)
+                                ]
+
+                                span [] [
+                                    text (sprintf "largest %d %s" maxNm unit)
+                                ]
+                            ]
+
+                        | None ->
+                            yield div [
+                                style overlayColorMapLabelSyle
+                            ] [
+                                text (sprintf "no wavelength range for texture %d" activeTextureIndex)
+                            ]
+                    ]
+
+                }
+            )
+        ]
+
     body [ style "margin: 0; overflow: hidden; background: black" ] [
         renderArea
         toolbar
+        colorMapOverlay
     ]
 
 let threads (m : Model) =

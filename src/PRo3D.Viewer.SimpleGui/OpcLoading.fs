@@ -25,6 +25,10 @@ module OpcLoading =
 
     type PoiFileDto() =
         member val PointsOfInterest : PoiDto[] = null with get, set
+
+    type WavelengthConfigDto() =
+        member val Unit : string = "nm" with get, set
+        member val Wavelengths : int[] = [||] with get, set
         
     let private tryV3d (values : float[]) =
         if isNull values || values.Length <> 3 then
@@ -84,6 +88,47 @@ module OpcLoading =
             with ex ->
                 Log.warn "[POI] Could not read %s: %s" path ex.Message
                 []
+
+    let loadWavelengthConfig (rootDir : string) : WavelengthConfig =
+        let fallback =
+            {
+                Unit = "nm"
+                Wavelengths = [ 400; 600; 1700; 1800 ]
+            }
+
+        let path =
+            Path.Combine(rootDir, "resources\wavelengths.json")
+
+        if not (File.Exists path) then
+            Log.warn "[Wavelengths] File does not exist: %s. Using fallback." path
+            fallback
+        else
+            try
+                let json = File.ReadAllText path
+
+                let options = JsonSerializerOptions()
+                options.PropertyNameCaseInsensitive <- true
+
+                let file =
+                    JsonSerializer.Deserialize<WavelengthConfigDto>(json, options)
+
+                if isNull file || isNull file.Wavelengths || file.Wavelengths.Length < 4 then
+                    Log.warn "[Wavelengths] Invalid wavelength config. Using fallback."
+                    fallback
+                else
+                    {
+                        Unit =
+                            if System.String.IsNullOrWhiteSpace file.Unit then
+                                "nm"
+                            else
+                                file.Unit
+
+                        Wavelengths =
+                            file.Wavelengths |> Array.toList
+                    }
+            with ex ->
+                Log.warn "[Wavelengths] Could not read %s: %s. Using fallback." path ex.Message
+                fallback
 
     let private serializer = FsPickler.CreateBinarySerializer()
 

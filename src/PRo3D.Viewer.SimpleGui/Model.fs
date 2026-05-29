@@ -12,6 +12,11 @@ type PointOfInterestCamera = {
     Up       : V3d
 }
 
+type WavelengthConfig = {
+    Unit    : string
+    Wavelengths : list<int>
+}
+
 /// State after a folder was successfully loaded:
 /// the root-node bounding box and the absolute paths of every
 /// patchhierarchy.xml directory (i.e. the OPCs to render).
@@ -27,6 +32,7 @@ type LoadedScene = {
     /// gravity, lon/lat/rad, …).
     TextureCount    : int
     PointsOfInterest  : list<PointOfInterestCamera>
+    WavelengthConfig : WavelengthConfig
 }
 
 // The explicit numeric values are important because the shader receives them as int uniforms.
